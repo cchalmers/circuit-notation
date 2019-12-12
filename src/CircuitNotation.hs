@@ -40,6 +40,9 @@ import           SrcLoc
 import System.IO
 import qualified OccName
 
+
+-- | The name given to a 'port', i.e. the name of something either to the left of a '<-' or to the
+-- right of a '-<'.
 data PortName = PortName SrcSpan GHC.FastString
 
 instance Show PortName where
@@ -78,13 +81,16 @@ data PortDescription a
 tupP :: p ~ GhcPs => [LPat p] -> LPat p
 tupP pats = noLoc $ TuplePat NoExt pats GHC.Boxed
 
+vecP :: p ~ GhcPs => [LPat p] -> LPat p
+vecP pats = noLoc $ ListPat NoExt pats
+
 varP :: p ~ GhcPs => SrcSpan -> String -> LPat p
 varP loc nm = L loc $ VarPat NoExt (L loc $ var nm)
 
 bindWithSuffix :: p ~ GhcPs => String -> PortDescription PortName -> LPat p
 bindWithSuffix suffix = \case
   Tuple ps -> tupP $ fmap (bindWithSuffix suffix) ps
-  -- Vec ps   -> vecP $ fmap (bindWithSuffix suffix) ps
+  Vec ps   -> vecP $ fmap (bindWithSuffix suffix) ps
   Ref (PortName loc fs) -> varP loc (GHC.unpackFS fs <> suffix)
   -- Lazy p   -> tildeP $ bindWithSuffix suffix p
 
@@ -106,7 +112,7 @@ bindOutputs slaves masters = tupP [m2s, s2m]
 expWithSuffix :: p ~ GhcPs => String -> PortDescription PortName -> LHsExpr p
 expWithSuffix suffix = \case
   Tuple ps -> tupE noSrcSpan $ fmap (expWithSuffix suffix) ps
-  -- Vec ps   -> vecE $ fmap (expWithSuffix suffix) ps
+  Vec ps   -> vecE noSrcSpan $ fmap (expWithSuffix suffix) ps
   Ref (PortName loc fs)   -> varE loc (var $ GHC.unpackFS fs <> suffix)
   -- Lazy p   -> expWithSuffix suffix p
 
@@ -188,10 +194,14 @@ var = GHC.Unqual . OccName.mkVarOcc
 con :: String -> GHC.RdrName
 con = GHC.Unqual . OccName.mkDataOcc
 
+vecE :: p ~ GhcPs => SrcSpan -> [LHsExpr p] -> LHsExpr p
+vecE loc elems = L loc $ ExplicitList NoExt Nothing elems
+
 tupE :: p ~ GhcPs => SrcSpan -> [LHsExpr p] -> LHsExpr p
 tupE loc elems = L loc $ ExplicitTuple NoExt tupArgs GHC.Boxed
   where
     tupArgs = map (\arg@(L l _) -> L l (Present NoExt arg)) elems
+
 plugin :: GHC.Plugin
 plugin = GHC.defaultPlugin
   { GHC.parsedResultAction = \_cliOptions -> pluginImpl
@@ -355,6 +365,7 @@ fromPort = \case
   L _ (ExplicitTuple _ tups _) -> let
     vals = fmap (\(L _ (Present _ exp)) -> exp) tups
     in Tuple $ fmap fromPort vals
+  L _ (ExplicitList _ _syntaxExpr exprs) -> Vec $ fmap fromPort exprs
   L loc expr ->
     case expr of
       HsArrApp _xapp cir arg _ _ ->

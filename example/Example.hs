@@ -46,7 +46,7 @@ module Example where
 
 data Circuit a b = Circuit {runCircuit :: (a,b) -> (b,a)}
 
-myCircuit :: Circuit Int Char
+myCircuit :: Circuit [Int] Char
 myCircuit = undefined
 
 myCircuitRev :: Circuit Char Int
@@ -73,7 +73,7 @@ swapC = circuit \ (a,b) -> do
 tupCir1 :: Circuit (Int, Char) (Char, Int)
 tupCir1 = circuit \ input -> do
   (c,i) <- swapC @Int -< input
-  i' <- myCircuit -< i
+  i' <- myCircuit -< [i]
   let myIdCircuit = circuit \port -> do idC -< port
   c' <- myCircuitRev -< c
   c'' <- myIdCircuit -< c'
