@@ -135,16 +135,6 @@ decFromBinding Binding {..} = do
       bod = runCircuitFun noSrcSpan `appE` bCircuit `appE` inputExp
    in patBind bindPat bod
 
-mySuperSimpleLet :: p ~ GhcPs => LHsExpr p
-mySuperSimpleLet = letE noSrcSpan binds end
-  where
-    binds :: [LHsBindLR GhcPs GhcPs]
-    binds = [noLoc $ patBind lhs rhs]
-    lhs = varP noSrcSpan "lhs"
-    rhs = varE noSrcSpan (var "rhs")
-
-    end = varE noSrcSpan (var "myVar")
-
 patBind :: p ~ GhcPs => LPat p -> LHsExpr p -> HsBindLR p p
 patBind lhs expr = PatBind NoExt lhs rhs ([], [])
   where
@@ -417,9 +407,6 @@ transform
     -> GHC.Hsc (GHC.Located (HsModule GhcPs))
 transform dflags = SYB.everywhereM (SYB.mkM transform') where
     transform' :: LHsExpr GhcPs -> GHC.Hsc (LHsExpr GhcPs)
-
-      -- pure $ L l mySuperSimpleLet
-    -- transform' e = pure e
     transform' e@(L l (HsApp xapp (L _ (HsVar _ (L _ appA))) (L _ appB)))
       | appA == GHC.mkVarUnqual "circuit" = do
       debug "HsApp!"
@@ -474,299 +461,317 @@ transform dflags = SYB.everywhereM (SYB.mkM transform') where
 showC :: Data.Data a => a -> String
 showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
 
--------------------------------------------------------------------------------
--- Expression
--------------------------------------------------------------------------------
-
-transformExpr
-    :: MonadIO m
-    => GHC.DynFlags
-    -> LHsExpr GhcPs
-    -> m (LHsExpr GhcPs)
-transformExpr dflags expr@(L _e OpApp {}) = do
-    let bt = matchOp expr
-    let result = idiomBT bt
-    debug $ "RES : " ++ GHC.showPpr dflags result
-    return result
-transformExpr dflags expr = do
-    let (f :| args) = matchApp expr
-    let f' = pureExpr f
-    debug $ "FUN : " ++ GHC.showPpr dflags f
-    debug $ "FUN+: " ++ GHC.showPpr dflags f'
-    for_ (zip args args) $ \arg ->
-        debug $ "ARG : " ++ GHC.showPpr dflags arg
-    let result = foldl' apply f' args
-    debug $ "RES : " ++ GHC.showPpr dflags result
-    return result
-
--------------------------------------------------------------------------------
--- Pure
--------------------------------------------------------------------------------
-
--- f ~> pure f
-pureExpr :: LHsExpr GhcPs -> LHsExpr GhcPs
-pureExpr (L l f) =
-    L l $ HsApp NoExt (L l' (HsVar NoExt (L l' pureRdrName))) (L l' f)
-  where
-    l' = GHC.noSrcSpan
-
-pureRdrName :: GHC.RdrName
-pureRdrName = GHC.mkRdrUnqual (GHC.mkVarOcc "pure")
-
--- x y ~> x <|> y
-altExpr :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
-altExpr x y =
-    L l' $ OpApp NoExt x (L l' (HsVar NoExt (L l' altRdrName))) y
-  where
-    l' = GHC.noSrcSpan
-
-altRdrName :: GHC.RdrName
-altRdrName = GHC.mkRdrUnqual (GHC.mkVarOcc "<|>")
-
--- f x ~> f <$> x
-fmapExpr :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
-fmapExpr f x =
-    L l' $ OpApp NoExt f (L l' (HsVar NoExt (L l' fmapRdrName))) x
-  where
-    l' = GHC.noSrcSpan
-
-fmapRdrName :: GHC.RdrName
-fmapRdrName = GHC.mkRdrUnqual (GHC.mkVarOcc "<$>")
-
--- f x ~> f <*> x
-apExpr :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
-apExpr f x =
-    L l' $ OpApp NoExt f (L l' (HsVar NoExt (L l' apRdrName))) x
-  where
-    l' = GHC.noSrcSpan
-
-apRdrName :: GHC.RdrName
-apRdrName = GHC.mkRdrUnqual (GHC.mkVarOcc "<*>")
-
--- f x -> f <* x
-birdExpr :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
-birdExpr f x =
-    L l' $ OpApp NoExt f (L l' (HsVar NoExt (L l' birdRdrName))) x
-  where
-    l' = GHC.noSrcSpan
-
-birdRdrName :: GHC.RdrName
-birdRdrName = GHC.mkRdrUnqual (GHC.mkVarOcc "<*")
-
--- f x -y z  ->  (((pure f <*> x) <* y) <*> z)
-apply :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
-apply f (L _ (HsPar _ (L _ (HsApp _ (L _ (HsVar _ (L _ voidName'))) x))))
-    | voidName' == voidName = birdExpr f x
-apply f x                   = apExpr f x
-
-voidName :: GHC.RdrName
-voidName = GHC.mkRdrUnqual (GHC.mkVarOcc "void")
-
--------------------------------------------------------------------------------
--- Function application maching
--------------------------------------------------------------------------------
-
--- | Match nested function applications, 'HsApp':
--- f x y z ~> f :| [x,y,z]
 --
-matchApp :: LHsExpr p -> NonEmpty (LHsExpr p)
-matchApp (L _ (HsApp _ f x)) = neSnoc (matchApp f) x
-matchApp e = pure e
-
-neSnoc :: NonEmpty a -> a -> NonEmpty a
-neSnoc (x :| xs) y = x :| xs ++ [y]
-
--------------------------------------------------------------------------------
--- Operator application matching
--------------------------------------------------------------------------------
-
--- | Match nested operator applications, 'OpApp'.
--- x + y * z ~>  Branch (+) (Leaf x) (Branch (*) (Leaf y) (Leaf z))
-matchOp :: LHsExpr p -> BT (LHsExpr p)
-matchOp (L _ (OpApp _  lhs op rhs)) = Branch (matchOp lhs) op (matchOp rhs)
-matchOp x = Leaf x
-
--- | Non-empty binary tree, with elements at branches too.
-data BT a = Leaf a | Branch (BT a) a (BT a)
-
--- flatten: note that leaf is returned as is.
-idiomBT :: BT (LHsExpr GhcPs) -> LHsExpr GhcPs
-idiomBT (Leaf x)            = x
-idiomBT (Branch lhs op rhs) = fmapExpr op (idiomBT lhs) `apExpr` idiomBT rhs
-
--------------------------------------------------------------------------------
--- List Comprehension
--------------------------------------------------------------------------------
-
-matchListComp :: [LStmt GhcPs (LHsExpr GhcPs)] -> Maybe [LHsExpr GhcPs]
-matchListComp [L _ (BodyStmt _ expr2 _ _), L _ (LastStmt _ expr1 _ _)] =
-    Just [expr1, expr2]
-matchListComp [L _ (ParStmt _ blocks _ _), L _ (LastStmt _ expr1 _ _)] = do
-    exprs <- for blocks $ \bl -> case bl of
-        ParStmtBlock _ [L _ (BodyStmt _ e _ _)] _ _ -> Just e
-        _ -> Nothing
-    return $ expr1 : exprs
-matchListComp _ = Nothing
-
--------------------------------------------------------------------------------
--- Location checker
--------------------------------------------------------------------------------
-
--- Check that spans are right inside each others, i.e. we match
--- that there are no spaces between parens and brackets
-inside :: SrcSpan -> SrcSpan -> Bool
-inside (RealSrcSpan a) (RealSrcSpan b) = and
-    [ srcSpanStartLine a == srcSpanStartLine b
-    , srcSpanEndLine a == srcSpanEndLine b
-    , srcSpanStartCol a + 1 == srcSpanStartCol b
-    , srcSpanEndCol a == srcSpanEndCol b + 1
-    ]
-inside _ _ = False
-  -- noLoc $ HsValBinds NoExt binds
-  -- where
-  --   binds :: HsValBindsLR GhcPs GhcPs
-  --   binds = ValBinds NoExt hsBinds sigs
-  --   sigs = []
-  --   hsBinds :: LHsBindsLR GhcPs GhcPs
-  --   hsBinds = listToBag . (:[]) $ myCoolBind
-
-  --   myCoolBind :: LHsBindLR GhcPs GhcPs
-  --   -- myCoolBind = noLoc $ VarBind NoExt myBindId myExpr False
-  --   myCoolBind = noLoc $ PatBind NoExt lhs rhs ([],[])
-
-  --   lhs :: LPat GhcPs
-  --   lhs = noLoc $ TuplePat NoExt pats GHC.Boxed
-
-  --   pats :: [LPat GhcPs]
-  --   pats =
-  --     [ noLoc $ VarPat NoExt (noLoc $ mkName "yo")
-  --     , noLoc $ VarPat NoExt (noLoc $ mkName "la")
-  --     ]
-
-  --   mkName :: String -> GHC.RdrName
-  --   mkName = GHC.Unqual . OccName.mkVarOcc
-
-  --   rhs :: GRHSs GhcPs (LHsExpr GhcPs)
-  --   rhs = GRHSs NoExt [myGr] (noLoc $ EmptyLocalBinds NoExt)
-
-  --   myGr :: LGRHS GhcPs (LHsExpr GhcPs)
-  --   myGr = noLoc $ GRHS NoExt [] myVar
-
-  --   myVar :: LHsExpr GhcPs
-  --   myVar = noLoc $ HsVar NoExt (noLoc $ mkName "ah")
+--
 
 
--- patBind :: p ~ GhcPs => LPat p -> LHsExpr p -> HsBindLR p p
-
--- binding :: p ~ GhcPs => Binding (LHsExpr p) PortName -> HsBind p
--- binding Binding {..} = patBind pat expr
+-- mySuperSimpleLet :: p ~ GhcPs => LHsExpr p
+-- mySuperSimpleLet = letE noSrcSpan binds end
 --   where
---     pat =
-
--- mySuperSimpleLet :: p ~ GhcPs => HsExpr p
--- mySuperSimpleLet = HsLet NoExt mySuperSimpleLocalBind myIn
---   where
---     myIn = noLoc $ HsVar NoExt (noLoc myVarId)
---     myVarId = GHC.Unqual (OccName.mkVarOcc "yo")
-
-
-  -- let bindPat  = bindOutputs bOut bIn
-  --     inputExp = createInputs bIn bOut
-  --     bod = varE 'runCircuit' `appE` pure bCircuit `appE` inputExp
-  -- valD bindPat (normalB bod) []
+--     binds :: [LHsBindLR GhcPs GhcPs]
+--     binds = [noLoc $ patBind lhs rhs]
+--     lhs = varP noSrcSpan "lhs"
+--     rhs = varE noSrcSpan (var "rhs")
+--     end = varE noSrcSpan (var "myVar")
 
 
 
--- decFromBinding :: Binding String -> Q Dec
--- decFromBinding Binding {..} = do
---   let bindPat  = bindOutputs bOut bIn
---       inputExp = createInputs bIn bOut
---       bod = varE 'runCircuit' `appE` pure bCircuit `appE` inputExp
---   valD bindPat (normalB bod) []
-
--- plugin :: GHC.Plugin
--- plugin = GHC.defaultPlugin
---   { GHC.renamedResultAction = \_cliOptions _ _ -> error "made it here"
---   }
-
--- class GHC.Outputable a where
---     GHC.ppr :: a -> GHC.SDoc
---       GHC.pprPrec :: Rational -> a -> GHC.SDoc
-
-
-    -- transform' e@(L l (HsPar _ (L l' (ExplicitList  _ Nothing exprs)))) | inside l l' =
-    --     case exprs of
-    --         [expr] -> do
-    --             expr' <- transformExpr dflags expr
-    --             return (L l (HsPar NoExt expr'))
-    --         _ -> do
-    --             liftIO $ GHC.putLogMsg dflags GHC.NoReason Err.SevWarning l (GHC.defaultErrStyle dflags) $
-    --                 GHC.text "Non singleton idiom bracket list"
-    --                 GHC.$$
-    --                 GHC.ppr exprs
-    --             return e
-    -- transform' (L l (HsPar _ (L l' (HsDo _ ListComp (L _ stmts)))))
-    --     | inside l l', Just exprs <- matchListComp stmts = do
-    --         for_ exprs $ \expr ->
-    --             debug $ "ALT: " ++ GHC.showPpr dflags expr
--- --            for_ (zip stmts [0..]) $ \(stmt, i) -> do
--- --                debug $ show i ++ " ==> " ++ SYB.gshow stmt
-    --         exprs' <- traverse (transformExpr dflags) exprs
-    --         return (foldr1 altExpr exprs')
-    -- transform' expr =
-    --     return expr
-
-    -- transform' e@(L l (HsLet _xhsLet localBinds inExpr)) = do
-    --   case localBinds of
-    --     L _ (HsValBinds NoExt binds) ->
-    --       case binds of
-    --         ValBinds NoExt hsBinds sigs ->
-    --           case bagToList hsBinds of
-    --             -- [L _ (FunBind NoExt bindId expr _)] ->
-    --             [L _ (VarBind NoExt bindId expr _)] ->
-    --               debug $ deepShowD bindId
-    --             [L _ (PatBind NoExt (L _ lhs) rhs ticks)] -> do
-    --               debug $ "lhs: " <> deepShowD lhs
-    --               case lhs of
-    --                 TuplePat _xTuple pats GHC.Boxed ->
-    --                   case pats of
-    --                     [ L _ (VarPat _ (L _ (GHC.Unqual nm1)))
-    --                       , L _ (VarPat _ (L _ (GHC.Unqual nm2)))
-    --                       ]
-    --                       -> do debug $ "p1: " <> OccName.occNameString nm1
-    --                             debug $ "p2: " <> OccName.occNameString nm2
-    --                     _ -> for_ pats $ debug . deepShowD
-    --               debug $ "rhs: " <> deepShowD rhs
-    --               case rhs of
-    --                 GRHSs _ body (L _ localBinds) -> do
-    --                   for_ body $ \(L _ (GRHS _ guard (L _ bod))) -> do
-    --                     debug $ "grhs_body: " <> deepShowD bod
-    --                   debug $ "localBinds: " <> deepShowD localBinds
-                -- [L _ vb] -> debug $ deepShowD vb
-      -- debug $ deepShowD localBinds
-      -- pure e
-
--- mkNewExprRn :: TcM (LHsExpr GhcTc)
--- mkNewExprRn = do
---   -- The names we want to use happen to already be in PrelNames so we use
---   -- them directly.
---   let print_occ = mkRdrUnqual (mkVarOcc "print")
---   print_name <- lookupOccRn print_occ
---   let raw_expr = nlHsApp (nlHsVar print_name) (nlHsVar (dataConName unitDataCon))
---   io_tycon <- tcLookupTyCon ioTyConName
---   let exp_type = mkTyConApp io_tycon [unitTy]
---   typecheckExpr exp_type raw_expr
-
--- mkNewExprPs :: TcM (LHsExpr GhcTc)
--- mkNewExprPs  = do
-
---   let
---     print_occ = mkRdrUnqual (mkVarOcc "print")
---     unit_occ = nameRdrName (dataConName unitDataCon)
---     ps_expr = nlHsApp (nlHsVar print_occ)
---                       (nlHsVar unit_occ)
-
---   io_tycon <- tcLookupTyCon ioTyConName
---   let exp_type = mkTyConApp io_tycon [unitTy]
---   renameExpr ps_expr >>= typecheckExpr exp_type
-
+--
+--
+--
+--  -------------------------------------------------------------------------------
+--  -- Expression
+--  -------------------------------------------------------------------------------
+--
+--  transformExpr
+--      :: MonadIO m
+--      => GHC.DynFlags
+--      -> LHsExpr GhcPs
+--      -> m (LHsExpr GhcPs)
+--  transformExpr dflags expr@(L _e OpApp {}) = do
+--      let bt = matchOp expr
+--      let result = idiomBT bt
+--      debug $ "RES : " ++ GHC.showPpr dflags result
+--      return result
+--  transformExpr dflags expr = do
+--      let (f :| args) = matchApp expr
+--      let f' = pureExpr f
+--      debug $ "FUN : " ++ GHC.showPpr dflags f
+--      debug $ "FUN+: " ++ GHC.showPpr dflags f'
+--      for_ (zip args args) $ \arg ->
+--          debug $ "ARG : " ++ GHC.showPpr dflags arg
+--      let result = foldl' apply f' args
+--      debug $ "RES : " ++ GHC.showPpr dflags result
+--      return result
+--
+--  -------------------------------------------------------------------------------
+--  -- Pure
+--  -------------------------------------------------------------------------------
+--
+--  -- f ~> pure f
+--  pureExpr :: LHsExpr GhcPs -> LHsExpr GhcPs
+--  pureExpr (L l f) =
+--      L l $ HsApp NoExt (L l' (HsVar NoExt (L l' pureRdrName))) (L l' f)
+--    where
+--      l' = GHC.noSrcSpan
+--
+--  pureRdrName :: GHC.RdrName
+--  pureRdrName = GHC.mkRdrUnqual (GHC.mkVarOcc "pure")
+--
+--  -- x y ~> x <|> y
+--  altExpr :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
+--  altExpr x y =
+--      L l' $ OpApp NoExt x (L l' (HsVar NoExt (L l' altRdrName))) y
+--    where
+--      l' = GHC.noSrcSpan
+--
+--  altRdrName :: GHC.RdrName
+--  altRdrName = GHC.mkRdrUnqual (GHC.mkVarOcc "<|>")
+--
+--  -- f x ~> f <$> x
+--  fmapExpr :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
+--  fmapExpr f x =
+--      L l' $ OpApp NoExt f (L l' (HsVar NoExt (L l' fmapRdrName))) x
+--    where
+--      l' = GHC.noSrcSpan
+--
+--  fmapRdrName :: GHC.RdrName
+--  fmapRdrName = GHC.mkRdrUnqual (GHC.mkVarOcc "<$>")
+--
+--  -- f x ~> f <*> x
+--  apExpr :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
+--  apExpr f x =
+--      L l' $ OpApp NoExt f (L l' (HsVar NoExt (L l' apRdrName))) x
+--    where
+--      l' = GHC.noSrcSpan
+--
+--  apRdrName :: GHC.RdrName
+--  apRdrName = GHC.mkRdrUnqual (GHC.mkVarOcc "<*>")
+--
+--  -- f x -> f <* x
+--  birdExpr :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
+--  birdExpr f x =
+--      L l' $ OpApp NoExt f (L l' (HsVar NoExt (L l' birdRdrName))) x
+--    where
+--      l' = GHC.noSrcSpan
+--
+--  birdRdrName :: GHC.RdrName
+--  birdRdrName = GHC.mkRdrUnqual (GHC.mkVarOcc "<*")
+--
+--  -- f x -y z  ->  (((pure f <*> x) <* y) <*> z)
+--  apply :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
+--  apply f (L _ (HsPar _ (L _ (HsApp _ (L _ (HsVar _ (L _ voidName'))) x))))
+--      | voidName' == voidName = birdExpr f x
+--  apply f x                   = apExpr f x
+--
+--  voidName :: GHC.RdrName
+--  voidName = GHC.mkRdrUnqual (GHC.mkVarOcc "void")
+--
+--  -------------------------------------------------------------------------------
+--  -- Function application maching
+--  -------------------------------------------------------------------------------
+--
+--  -- | Match nested function applications, 'HsApp':
+--  -- f x y z ~> f :| [x,y,z]
+--  --
+--  matchApp :: LHsExpr p -> NonEmpty (LHsExpr p)
+--  matchApp (L _ (HsApp _ f x)) = neSnoc (matchApp f) x
+--  matchApp e = pure e
+--
+--  neSnoc :: NonEmpty a -> a -> NonEmpty a
+--  neSnoc (x :| xs) y = x :| xs ++ [y]
+--
+--  -------------------------------------------------------------------------------
+--  -- Operator application matching
+--  -------------------------------------------------------------------------------
+--
+--  -- | Match nested operator applications, 'OpApp'.
+--  -- x + y * z ~>  Branch (+) (Leaf x) (Branch (*) (Leaf y) (Leaf z))
+--  matchOp :: LHsExpr p -> BT (LHsExpr p)
+--  matchOp (L _ (OpApp _  lhs op rhs)) = Branch (matchOp lhs) op (matchOp rhs)
+--  matchOp x = Leaf x
+--
+--  -- | Non-empty binary tree, with elements at branches too.
+--  data BT a = Leaf a | Branch (BT a) a (BT a)
+--
+--  -- flatten: note that leaf is returned as is.
+--  idiomBT :: BT (LHsExpr GhcPs) -> LHsExpr GhcPs
+--  idiomBT (Leaf x)            = x
+--  idiomBT (Branch lhs op rhs) = fmapExpr op (idiomBT lhs) `apExpr` idiomBT rhs
+--
+--  -------------------------------------------------------------------------------
+--  -- List Comprehension
+--  -------------------------------------------------------------------------------
+--
+--  matchListComp :: [LStmt GhcPs (LHsExpr GhcPs)] -> Maybe [LHsExpr GhcPs]
+--  matchListComp [L _ (BodyStmt _ expr2 _ _), L _ (LastStmt _ expr1 _ _)] =
+--      Just [expr1, expr2]
+--  matchListComp [L _ (ParStmt _ blocks _ _), L _ (LastStmt _ expr1 _ _)] = do
+--      exprs <- for blocks $ \bl -> case bl of
+--          ParStmtBlock _ [L _ (BodyStmt _ e _ _)] _ _ -> Just e
+--          _ -> Nothing
+--      return $ expr1 : exprs
+--  matchListComp _ = Nothing
+--
+--  -------------------------------------------------------------------------------
+--  -- Location checker
+--  -------------------------------------------------------------------------------
+--
+--  -- Check that spans are right inside each others, i.e. we match
+--  -- that there are no spaces between parens and brackets
+--  inside :: SrcSpan -> SrcSpan -> Bool
+--  inside (RealSrcSpan a) (RealSrcSpan b) = and
+--      [ srcSpanStartLine a == srcSpanStartLine b
+--      , srcSpanEndLine a == srcSpanEndLine b
+--      , srcSpanStartCol a + 1 == srcSpanStartCol b
+--      , srcSpanEndCol a == srcSpanEndCol b + 1
+--      ]
+--  inside _ _ = False
+--    -- noLoc $ HsValBinds NoExt binds
+--    -- where
+--    --   binds :: HsValBindsLR GhcPs GhcPs
+--    --   binds = ValBinds NoExt hsBinds sigs
+--    --   sigs = []
+--    --   hsBinds :: LHsBindsLR GhcPs GhcPs
+--    --   hsBinds = listToBag . (:[]) $ myCoolBind
+--
+--    --   myCoolBind :: LHsBindLR GhcPs GhcPs
+--    --   -- myCoolBind = noLoc $ VarBind NoExt myBindId myExpr False
+--    --   myCoolBind = noLoc $ PatBind NoExt lhs rhs ([],[])
+--
+--    --   lhs :: LPat GhcPs
+--    --   lhs = noLoc $ TuplePat NoExt pats GHC.Boxed
+--
+--    --   pats :: [LPat GhcPs]
+--    --   pats =
+--    --     [ noLoc $ VarPat NoExt (noLoc $ mkName "yo")
+--    --     , noLoc $ VarPat NoExt (noLoc $ mkName "la")
+--    --     ]
+--
+--    --   mkName :: String -> GHC.RdrName
+--    --   mkName = GHC.Unqual . OccName.mkVarOcc
+--
+--    --   rhs :: GRHSs GhcPs (LHsExpr GhcPs)
+--    --   rhs = GRHSs NoExt [myGr] (noLoc $ EmptyLocalBinds NoExt)
+--
+--    --   myGr :: LGRHS GhcPs (LHsExpr GhcPs)
+--    --   myGr = noLoc $ GRHS NoExt [] myVar
+--
+--    --   myVar :: LHsExpr GhcPs
+--    --   myVar = noLoc $ HsVar NoExt (noLoc $ mkName "ah")
+--
+--
+--  -- patBind :: p ~ GhcPs => LPat p -> LHsExpr p -> HsBindLR p p
+--
+--  -- binding :: p ~ GhcPs => Binding (LHsExpr p) PortName -> HsBind p
+--  -- binding Binding {..} = patBind pat expr
+--  --   where
+--  --     pat =
+--
+--  -- mySuperSimpleLet :: p ~ GhcPs => HsExpr p
+--  -- mySuperSimpleLet = HsLet NoExt mySuperSimpleLocalBind myIn
+--  --   where
+--  --     myIn = noLoc $ HsVar NoExt (noLoc myVarId)
+--  --     myVarId = GHC.Unqual (OccName.mkVarOcc "yo")
+--
+--
+--    -- let bindPat  = bindOutputs bOut bIn
+--    --     inputExp = createInputs bIn bOut
+--    --     bod = varE 'runCircuit' `appE` pure bCircuit `appE` inputExp
+--    -- valD bindPat (normalB bod) []
+--
+--
+--
+--  -- decFromBinding :: Binding String -> Q Dec
+--  -- decFromBinding Binding {..} = do
+--  --   let bindPat  = bindOutputs bOut bIn
+--  --       inputExp = createInputs bIn bOut
+--  --       bod = varE 'runCircuit' `appE` pure bCircuit `appE` inputExp
+--  --   valD bindPat (normalB bod) []
+--
+--  -- plugin :: GHC.Plugin
+--  -- plugin = GHC.defaultPlugin
+--  --   { GHC.renamedResultAction = \_cliOptions _ _ -> error "made it here"
+--  --   }
+--
+--  -- class GHC.Outputable a where
+--  --     GHC.ppr :: a -> GHC.SDoc
+--  --       GHC.pprPrec :: Rational -> a -> GHC.SDoc
+--
+--
+--      -- transform' e@(L l (HsPar _ (L l' (ExplicitList  _ Nothing exprs)))) | inside l l' =
+--      --     case exprs of
+--      --         [expr] -> do
+--      --             expr' <- transformExpr dflags expr
+--      --             return (L l (HsPar NoExt expr'))
+--      --         _ -> do
+--      --             liftIO $ GHC.putLogMsg dflags GHC.NoReason Err.SevWarning l (GHC.defaultErrStyle dflags) $
+--      --                 GHC.text "Non singleton idiom bracket list"
+--      --                 GHC.$$
+--      --                 GHC.ppr exprs
+--      --             return e
+--      -- transform' (L l (HsPar _ (L l' (HsDo _ ListComp (L _ stmts)))))
+--      --     | inside l l', Just exprs <- matchListComp stmts = do
+--      --         for_ exprs $ \expr ->
+--      --             debug $ "ALT: " ++ GHC.showPpr dflags expr
+--  -- --            for_ (zip stmts [0..]) $ \(stmt, i) -> do
+--  -- --                debug $ show i ++ " ==> " ++ SYB.gshow stmt
+--      --         exprs' <- traverse (transformExpr dflags) exprs
+--      --         return (foldr1 altExpr exprs')
+--      -- transform' expr =
+--      --     return expr
+--
+--      -- transform' e@(L l (HsLet _xhsLet localBinds inExpr)) = do
+--      --   case localBinds of
+--      --     L _ (HsValBinds NoExt binds) ->
+--      --       case binds of
+--      --         ValBinds NoExt hsBinds sigs ->
+--      --           case bagToList hsBinds of
+--      --             -- [L _ (FunBind NoExt bindId expr _)] ->
+--      --             [L _ (VarBind NoExt bindId expr _)] ->
+--      --               debug $ deepShowD bindId
+--      --             [L _ (PatBind NoExt (L _ lhs) rhs ticks)] -> do
+--      --               debug $ "lhs: " <> deepShowD lhs
+--      --               case lhs of
+--      --                 TuplePat _xTuple pats GHC.Boxed ->
+--      --                   case pats of
+--      --                     [ L _ (VarPat _ (L _ (GHC.Unqual nm1)))
+--      --                       , L _ (VarPat _ (L _ (GHC.Unqual nm2)))
+--      --                       ]
+--      --                       -> do debug $ "p1: " <> OccName.occNameString nm1
+--      --                             debug $ "p2: " <> OccName.occNameString nm2
+--      --                     _ -> for_ pats $ debug . deepShowD
+--      --               debug $ "rhs: " <> deepShowD rhs
+--      --               case rhs of
+--      --                 GRHSs _ body (L _ localBinds) -> do
+--      --                   for_ body $ \(L _ (GRHS _ guard (L _ bod))) -> do
+--      --                     debug $ "grhs_body: " <> deepShowD bod
+--      --                   debug $ "localBinds: " <> deepShowD localBinds
+--                  -- [L _ vb] -> debug $ deepShowD vb
+--        -- debug $ deepShowD localBinds
+--        -- pure e
+--
+--  -- mkNewExprRn :: TcM (LHsExpr GhcTc)
+--  -- mkNewExprRn = do
+--  --   -- The names we want to use happen to already be in PrelNames so we use
+--  --   -- them directly.
+--  --   let print_occ = mkRdrUnqual (mkVarOcc "print")
+--  --   print_name <- lookupOccRn print_occ
+--  --   let raw_expr = nlHsApp (nlHsVar print_name) (nlHsVar (dataConName unitDataCon))
+--  --   io_tycon <- tcLookupTyCon ioTyConName
+--  --   let exp_type = mkTyConApp io_tycon [unitTy]
+--  --   typecheckExpr exp_type raw_expr
+--
+--  -- mkNewExprPs :: TcM (LHsExpr GhcTc)
+--  -- mkNewExprPs  = do
+--
+--  --   let
+--  --     print_occ = mkRdrUnqual (mkVarOcc "print")
+--  --     unit_occ = nameRdrName (dataConName unitDataCon)
+--  --     ps_expr = nlHsApp (nlHsVar print_occ)
+--  --                       (nlHsVar unit_occ)
+--
+--  --   io_tycon <- tcLookupTyCon ioTyConName
+--  --   let exp_type = mkTyConApp io_tycon [unitTy]
+--  --   renameExpr ps_expr >>= typecheckExpr exp_type
+--
