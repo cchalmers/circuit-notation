@@ -10,6 +10,8 @@
 {-# LANGUAGE TypeFamilies #-}
 module CircuitNotation (plugin) where
 
+import System.IO.Unsafe
+
 import Debug.Trace
 
 import FastString (mkFastString)
@@ -36,6 +38,10 @@ import qualified GhcPlugins  as GHC
 import           HsExtension (GhcPs, NoExt (..))
 import           HsSyn
 import           SrcLoc
+import           ErrUtils
+import           HscTypes (throwOneError)
+import qualified Outputable
+
 
 import System.IO
 import qualified OccName
@@ -59,7 +65,7 @@ data Binding exp l = Binding
   { bCircuit :: exp
   , bOut     :: PortDescription l
   , bIn      :: PortDescription l
-  } deriving (Show, Functor)
+  } deriving (Functor)
 
 -- | A description of a circuit with internal let bindings.
 data CircuitQQ dec exp nm = CircuitQQ
@@ -67,7 +73,7 @@ data CircuitQQ dec exp nm = CircuitQQ
   , circuitQQLets    :: [dec]
   , circuitQQBinds   :: [Binding exp nm]
   , circuitQQMasters :: PortDescription nm
-  } deriving (Show, Functor)
+  } deriving (Functor)
 
 -- PortDescription -----------------------------------------------------
 
@@ -76,7 +82,8 @@ data PortDescription a
   | Vec [PortDescription a]
   | Ref a
   | Lazy (PortDescription a)
-  deriving (Eq, Foldable, Functor, Traversable, Show)
+  | PortErr SrcSpan MsgDoc
+  deriving (Foldable, Functor, Traversable)
 
 tupP :: p ~ GhcPs => [LPat p] -> LPat p
 tupP pats = noLoc $ TuplePat NoExt pats GHC.Boxed
@@ -87,27 +94,30 @@ vecP pats = noLoc $ ListPat NoExt pats
 varP :: p ~ GhcPs => SrcSpan -> String -> LPat p
 varP loc nm = L loc $ VarPat NoExt (L loc $ var nm)
 
-bindWithSuffix :: p ~ GhcPs => String -> PortDescription PortName -> LPat p
-bindWithSuffix suffix = \case
-  Tuple ps -> tupP $ fmap (bindWithSuffix suffix) ps
-  Vec ps   -> vecP $ fmap (bindWithSuffix suffix) ps
+bindWithSuffix :: p ~ GhcPs => GHC.DynFlags -> String -> PortDescription PortName -> LPat p
+bindWithSuffix dflags suffix = \case
+  Tuple ps -> tupP $ fmap (bindWithSuffix dflags suffix) ps
+  Vec ps   -> vecP $ fmap (bindWithSuffix dflags suffix) ps
   Ref (PortName loc fs) -> varP loc (GHC.unpackFS fs <> suffix)
+  PortErr loc msgdoc -> unsafePerformIO . throwOneError $
+    mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "Unhandled bind") msgdoc
   -- Lazy p   -> tildeP $ bindWithSuffix suffix p
 
 bindOutputs
   :: p ~ GhcPs
-  => PortDescription PortName
+  => GHC.DynFlags
+  -> PortDescription PortName
   -- ^ slave ports
   -> PortDescription PortName
   -- ^ master ports
   -> LPat p
-bindOutputs slaves masters = tupP [m2s, s2m]
+bindOutputs dflags slaves masters = tupP [m2s, s2m]
   where
   -- super hacky: at this point we can generate names not possible in
   -- normal haskell (i.e. with spaces or colons). This is used to
   -- emulate non-captuable names.
-  m2s = bindWithSuffix ":M2S" masters
-  s2m = bindWithSuffix ":S2M" slaves
+  m2s = bindWithSuffix dflags ":M2S" masters
+  s2m = bindWithSuffix dflags ":S2M" slaves
 
 expWithSuffix :: p ~ GhcPs => String -> PortDescription PortName -> LHsExpr p
 expWithSuffix suffix = \case
@@ -128,9 +138,9 @@ createInputs slaves masters = tupE noSrcSpan [m2s, s2m]
   m2s = expWithSuffix ":M2S" masters
   s2m = expWithSuffix ":S2M" slaves
 
-decFromBinding :: p ~ GhcPs => Binding (LHsExpr p) PortName -> HsBind p
-decFromBinding Binding {..} = do
-  let bindPat  = bindOutputs bOut bIn
+decFromBinding :: p ~ GhcPs => GHC.DynFlags -> Binding (LHsExpr p) PortName -> HsBind p
+decFromBinding dflags Binding {..} = do
+  let bindPat  = bindOutputs dflags bOut bIn
       inputExp = createInputs bIn bOut
       bod = runCircuitFun noSrcSpan `appE` bCircuit `appE` inputExp
    in patBind bindPat bod
@@ -225,7 +235,7 @@ handleStmt
 handleStmt = \case
   LetStmt _xlet letBind -> Left letBind
   BodyStmt _xbody body _idr _idr' -> Right (bodyBinding Nothing body)
-  BindStmt _xbody bind body _idr _idr' -> Right (bodyBinding (Just $ bindPort bind) body)
+  BindStmt _xbody bind body _idr _idr' -> Right (bodyBinding (Just $ bindSlave bind) body)
 
 handleStmts
   :: (p ~ GhcPs)
@@ -247,7 +257,7 @@ bodyBinding mInput lexpr@(L _loc expr) =
     HsArrApp _xhsArrApp circuit port HsFirstOrderApp True ->
       Binding
         { bCircuit = circuit
-        , bOut     = fromPort port
+        , bOut     = bindMaster port
         , bIn      = fromMaybe (Tuple []) mInput
         }
 
@@ -273,7 +283,7 @@ circuitQQ = \case
     [L _ (Match _matchX _matchContext [matchPats] matchGr)] = unL alts
 
     slaves :: PortDescription PortName
-    slaves = bindPort matchPats
+    slaves = bindSlave matchPats
 
     GRHSs _grX grHss _grLocalBinds = matchGr
     [L _ (GRHS _ _ (L _ body))] = grHss
@@ -282,7 +292,7 @@ circuitQQ = \case
     masters :: PortDescription PortName
     masters =
       case finalStmt of
-        L _ (BodyStmt _bodyX body _idr _idr') -> fromPort body
+        L _ (BodyStmt _bodyX body _idr _idr') -> bindMaster body
 
     (lets, bindings) = handleStmts stmts
 
@@ -295,7 +305,8 @@ circuitQQ = \case
 
 mkCircuit
   :: p ~ GhcPs
-  => PortDescription PortName
+  => GHC.DynFlags
+  -> PortDescription PortName
   -- ^ slave ports
   -> [LHsBindLR p p]
   -- ^ let bindings
@@ -303,8 +314,8 @@ mkCircuit
   -- ^ master ports
   -> LHsExpr p
   -- ^ circuit
-mkCircuit slaves lets masters = let
-  pats = bindOutputs masters slaves
+mkCircuit dflags slaves lets masters = let
+  pats = bindOutputs dflags masters slaves
   res  = createInputs slaves masters
 
   body :: LHsExpr GhcPs
@@ -314,16 +325,17 @@ mkCircuit slaves lets masters = let
 
 circuitQQExp
   :: p ~ GhcPs
-  => CircuitQQ (LHsBind p) (LHsExpr p) PortName
- -> LHsExpr p
-circuitQQExp CircuitQQ {..} = do
+  => GHC.DynFlags
+  -> CircuitQQ (LHsBind p) (LHsExpr p) PortName
+  -> LHsExpr p
+circuitQQExp dynflags CircuitQQ {..} = do
   let decs = concat
         [ circuitQQLets
-        , fmap (noLoc . decFromBinding) circuitQQBinds
+        , fmap (noLoc . decFromBinding dynflags) circuitQQBinds
         ]
       -- f :: HsBind GhcPs -> HsLocalBinds GhcPs
       -- f bind = HsValBinds NoExt $ ValBinds NoExt bind []
-  mkCircuit circuitQQSlaves decs circuitQQMasters
+  mkCircuit dynflags circuitQQSlaves decs circuitQQMasters
 
 lamE :: p ~ GhcPs => [LPat p] -> LHsExpr p -> LHsExpr p
 lamE pats expr = noLoc $ HsLam NoExt mg
@@ -342,29 +354,45 @@ lamE pats expr = noLoc $ HsLam NoExt mg
     grHs :: LGRHS GhcPs (LHsExpr GhcPs)
     grHs = noLoc $ GRHS NoExt [] expr
 
-bindPort :: p ~ GhcPs => LPat p -> PortDescription PortName
-bindPort = \case
+-- | Turn patterns to the left of a @<-@ into a PortDescription.
+bindSlave :: p ~ GhcPs => LPat p -> PortDescription PortName
+bindSlave = \case
   L _ (VarPat _ (L loc rdrName)) -> Ref (PortName loc (fromRdrName rdrName))
-  L _ (TuplePat _ lpat _) -> Tuple $ fmap bindPort lpat
-  L loc pat -> Ref (PortName loc (mkFastString "bindPort: Can't handle this pattern yet"))
-  -- pat -> error "Can't handle this pattern yet"
+  L _ (TuplePat _ lpat _) -> Tuple $ fmap bindSlave lpat
+  L loc pat ->
+    PortErr loc
+            (mkLocMessageAnn
+              Nothing
+              SevFatal
+              loc
+              (Outputable.text $ "Unhandled pattern " <> show (Data.toConstr pat))
+              )
 
-fromPort :: p ~ GhcPs => LHsExpr p -> PortDescription PortName
-fromPort = \case
+-- | Turn expressions to the right of a @-<@ into a PortDescription.
+bindMaster :: p ~ GhcPs => LHsExpr p -> PortDescription PortName
+bindMaster = \case
   L _ (HsVar _xvar (L loc rdrName)) -> Ref (PortName loc (fromRdrName rdrName))
   L _ (ExplicitTuple _ tups _) -> let
     vals = fmap (\(L _ (Present _ exp)) -> exp) tups
-    in Tuple $ fmap fromPort vals
-  L _ (ExplicitList _ _syntaxExpr exprs) -> Vec $ fmap fromPort exprs
+    in Tuple $ fmap bindMaster vals
+  L _ (ExplicitList _ _syntaxExpr exprs) -> Vec $ fmap bindMaster exprs
   L loc expr ->
     case expr of
       HsArrApp _xapp cir arg _ _ ->
         case cir of
           L _ (HsVar _ (L _ (GHC.Unqual occ)))
-            | OccName.occNameString occ == "idC" -> fromPort arg
+            | OccName.occNameString occ == "idC" -> bindMaster arg
             -- | otherwise -> let
             --     resName = mkRdrUnqual (var "uncaptureable:name")
             --     in (Ref resName, [bodyBinding (Just resName) arg])
+      _ -> PortErr loc
+        (mkLocMessageAnn
+          Nothing
+          SevFatal
+          loc
+          (Outputable.text $ "Unhandled expression " <> show (Data.toConstr expr))
+          )
+      -- showC loc
 
 finalStmt
   :: p ~ GhcPs
@@ -374,7 +402,7 @@ finalStmt = \case
   L loc (HsArrApp _ cir arg _ _) ->
     case cir of
           L _ (HsVar _ (L _ (GHC.Unqual occ)))
-            | OccName.occNameString occ == "idC" -> (fromPort arg, [])
+            | OccName.occNameString occ == "idC" -> (bindMaster arg, [])
             -- | otherwise  -> let
             --     resName = PortName loc (mkFastString "uncaptureable:name")
             --     binding :: Binding (LHsExpr GhcPs) PortName
@@ -389,7 +417,7 @@ finalStmt = \case
       --         GHC.Unqual occ ->
       --           Ref (PortName l (mkFastString $ OccName.occNameString occ))
 
-      -- Ref (PortName loc (mkFastString "fromPort: Can't handle this pattern yet"))
+      -- Ref (PortName loc (mkFastString "bindMaster: Can't handle this pattern yet"))
   -- _ -> error "can't handle this pattern yet"
 
             -- case out of
@@ -416,7 +444,7 @@ transform dflags = SYB.everywhereM (SYB.mkM transform') where
       let pp :: GHC.Outputable a => a -> String
           pp = GHC.showPpr dflags
           cqq = circuitQQ appB
-          expr = circuitQQExp cqq
+          expr = circuitQQExp dflags cqq
       debug $ pp expr
       pure expr
 
