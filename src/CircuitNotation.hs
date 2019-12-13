@@ -12,12 +12,9 @@ module CircuitNotation (plugin) where
 
 import System.IO.Unsafe
 
-import Debug.Trace
-
 import FastString (mkFastString)
 import qualified Data.Data as Data
 import Data.Maybe (fromMaybe)
-import Control.Arrow
 
 import Data.Either (partitionEithers)
 
@@ -25,20 +22,16 @@ import Bag
 
 import Data.Typeable
 import Control.Monad.IO.Class (MonadIO (..))
-import Data.Foldable          (for_)
-import Data.List              (foldl')
-import Data.List.NonEmpty     (NonEmpty (..))
-import Data.Traversable       (for)
 
 import qualified Data.Generics as SYB
 
 import qualified ErrUtils    as Err
-import qualified Pretty
+-- import qualified Pretty
 import qualified GhcPlugins  as GHC
 import           HsExtension (GhcPs, NoExt (..))
 import           HsSyn
 import           SrcLoc
-import           ErrUtils
+-- import           ErrUtils
 import           HscTypes (throwOneError)
 import qualified Outputable
 
@@ -82,7 +75,7 @@ data PortDescription a
   | Vec [PortDescription a]
   | Ref a
   | Lazy (PortDescription a)
-  | PortErr SrcSpan MsgDoc
+  | PortErr SrcSpan Err.MsgDoc
   deriving (Foldable, Functor, Traversable)
 
 tupP :: p ~ GhcPs => [LPat p] -> LPat p
@@ -100,8 +93,8 @@ bindWithSuffix dflags suffix = \case
   Vec ps   -> vecP $ fmap (bindWithSuffix dflags suffix) ps
   Ref (PortName loc fs) -> varP loc (GHC.unpackFS fs <> suffix)
   PortErr loc msgdoc -> unsafePerformIO . throwOneError $
-    mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "Unhandled bind") msgdoc
-  -- Lazy p   -> tildeP $ bindWithSuffix suffix p
+    Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "Unhandled bind") msgdoc
+  Lazy _ -> error "bindWithSuffix Lazy not handled" -- tildeP $ bindWithSuffix suffix p
 
 bindOutputs
   :: p ~ GhcPs
@@ -124,7 +117,9 @@ expWithSuffix suffix = \case
   Tuple ps -> tupE noSrcSpan $ fmap (expWithSuffix suffix) ps
   Vec ps   -> vecE noSrcSpan $ fmap (expWithSuffix suffix) ps
   Ref (PortName loc fs)   -> varE loc (var $ GHC.unpackFS fs <> suffix)
-  -- Lazy p   -> expWithSuffix suffix p
+  -- lazyness only affects the pattern side
+  Lazy p   -> expWithSuffix suffix p
+  PortErr _ _ -> error "expWithSuffix PortErr!"
 
 createInputs
   :: p ~ GhcPs
@@ -160,10 +155,8 @@ letE
   -> LHsExpr p
   -- ^ final `in` expressions
   -> LHsExpr p
-letE loc binds expr = L loc letE
+letE loc binds expr = L loc (HsLet NoExt localBinds expr)
   where
-    letE = HsLet NoExt localBinds expr
-
     localBinds :: LHsLocalBindsLR GhcPs GhcPs
     localBinds = L loc $ HsValBinds NoExt valBinds
 
@@ -236,6 +229,7 @@ handleStmt = \case
   LetStmt _xlet letBind -> Left letBind
   BodyStmt _xbody body _idr _idr' -> Right (bodyBinding Nothing body)
   BindStmt _xbody bind body _idr _idr' -> Right (bodyBinding (Just $ bindSlave bind) body)
+  _ -> error $ "Unhandled stmt"
 
 handleStmts
   :: (p ~ GhcPs)
@@ -244,6 +238,7 @@ handleStmts stmts = let
   (localBinds, bindings) = partitionEithers $ map (handleStmt . unL) stmts
   binds = flip concatMap localBinds \case
     L _ (HsValBinds _ (ValBinds _ valBinds _sigs)) -> bagToList valBinds
+    _ -> error $ "Unhandled bind"
 
   in (binds, bindings)
 
@@ -287,12 +282,13 @@ circuitQQ = \case
 
     GRHSs _grX grHss _grLocalBinds = matchGr
     [L _ (GRHS _ _ (L _ body))] = grHss
-    HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finalStmt))) = body
+    HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finStmt))) = body
 
     masters :: PortDescription PortName
     masters =
-      case finalStmt of
-        L _ (BodyStmt _bodyX body _idr _idr') -> bindMaster body
+      case finStmt of
+        L _ (BodyStmt _bodyX bod _idr _idr') -> bindMaster bod
+        L _ stmt -> error $ "Unhandled finStmt " <> showC stmt
 
     (lets, bindings) = handleStmts stmts
 
@@ -302,6 +298,8 @@ circuitQQ = \case
       , circuitQQBinds = bindings
       , circuitQQMasters = masters
       }
+
+  e -> error $ "Unhandled circuit " <> showC e
 
 mkCircuit
   :: p ~ GhcPs
@@ -361,9 +359,9 @@ bindSlave = \case
   L _ (TuplePat _ lpat _) -> Tuple $ fmap bindSlave lpat
   L loc pat ->
     PortErr loc
-            (mkLocMessageAnn
+            (Err.mkLocMessageAnn
               Nothing
-              SevFatal
+              Err.SevFatal
               loc
               (Outputable.text $ "Unhandled pattern " <> show (Data.toConstr pat))
               )
@@ -373,7 +371,7 @@ bindMaster :: p ~ GhcPs => LHsExpr p -> PortDescription PortName
 bindMaster = \case
   L _ (HsVar _xvar (L loc rdrName)) -> Ref (PortName loc (fromRdrName rdrName))
   L _ (ExplicitTuple _ tups _) -> let
-    vals = fmap (\(L _ (Present _ exp)) -> exp) tups
+    vals = fmap (\(L _ (Present _ expr)) -> expr) tups
     in Tuple $ fmap bindMaster vals
   L _ (ExplicitList _ _syntaxExpr exprs) -> Vec $ fmap bindMaster exprs
   L loc expr ->
@@ -385,49 +383,50 @@ bindMaster = \case
             -- | otherwise -> let
             --     resName = mkRdrUnqual (var "uncaptureable:name")
             --     in (Ref resName, [bodyBinding (Just resName) arg])
+          _ -> error "Can only handle final idC at the moment!"
       _ -> PortErr loc
-        (mkLocMessageAnn
+        (Err.mkLocMessageAnn
           Nothing
-          SevFatal
+          Err.SevFatal
           loc
           (Outputable.text $ "Unhandled expression " <> show (Data.toConstr expr))
           )
       -- showC loc
 
-finalStmt
-  :: p ~ GhcPs
-  => LHsExpr p
-  -> (PortDescription PortName, [Binding (LHsExpr GhcPs) PortName])
-finalStmt = \case
-  L loc (HsArrApp _ cir arg _ _) ->
-    case cir of
-          L _ (HsVar _ (L _ (GHC.Unqual occ)))
-            | OccName.occNameString occ == "idC" -> (bindMaster arg, [])
-            -- | otherwise  -> let
-            --     resName = PortName loc (mkFastString "uncaptureable:name")
-            --     binding :: Binding (LHsExpr GhcPs) PortName
-            --     binding = bodyBinding (Just _) (varE loc (var "uncaptureable:name"))
-            --      in (Ref resName, [binding])
-            --     -- in (Ref resName, [bodyBinding (Just arg) resName])
-
-      -- HsArrApp _xapp _idC (L _ var) _ _ ->
-      --   case var of
-      --     HsVar _ (L l rdr) ->
-      --       case rdr of
-      --         GHC.Unqual occ ->
-      --           Ref (PortName l (mkFastString $ OccName.occNameString occ))
-
-      -- Ref (PortName loc (mkFastString "bindMaster: Can't handle this pattern yet"))
-  -- _ -> error "can't handle this pattern yet"
-
-            -- case out of
-            --   Exts.Qualifier l e@(Exts.InfixApp _ var ArrIn source) ->
-            --     case var of
-            --       -- with idC there's no need for extra bindings
-            --       Exts.Var _ (Exts.UnQual _ (Exts.Ident _ "idC")) -> (portExp source, [])
-            --       _ -> let -- TODO: this should be a non-captureable name
-            --                resName = Exts.Ident l "cQQResult"
-            --            in  (Ref resName, [mkBinding (Exts.PVar undefined resName) e])
+-- finalStmt
+--   :: p ~ GhcPs
+--   => LHsExpr p
+--   -> (PortDescription PortName, [Binding (LHsExpr GhcPs) PortName])
+-- finalStmt = \case
+--   L loc (HsArrApp _ cir arg _ _) ->
+--     case cir of
+--           L _ (HsVar _ (L _ (GHC.Unqual occ)))
+--             | OccName.occNameString occ == "idC" -> (bindMaster arg, [])
+--             -- | otherwise  -> let
+--             --     resName = PortName loc (mkFastString "uncaptureable:name")
+--             --     binding :: Binding (LHsExpr GhcPs) PortName
+--             --     binding = bodyBinding (Just _) (varE loc (var "uncaptureable:name"))
+--             --      in (Ref resName, [binding])
+--             --     -- in (Ref resName, [bodyBinding (Just arg) resName])
+-- 
+--       -- HsArrApp _xapp _idC (L _ var) _ _ ->
+--       --   case var of
+--       --     HsVar _ (L l rdr) ->
+--       --       case rdr of
+--       --         GHC.Unqual occ ->
+--       --           Ref (PortName l (mkFastString $ OccName.occNameString occ))
+-- 
+--       -- Ref (PortName loc (mkFastString "bindMaster: Can't handle this pattern yet"))
+--   -- _ -> error "can't handle this pattern yet"
+-- 
+--             -- case out of
+--             --   Exts.Qualifier l e@(Exts.InfixApp _ var ArrIn source) ->
+--             --     case var of
+--             --       -- with idC there's no need for extra bindings
+--             --       Exts.Var _ (Exts.UnQual _ (Exts.Ident _ "idC")) -> (portExp source, [])
+--             --       _ -> let -- TODO: this should be a non-captureable name
+--             --                resName = Exts.Ident l "cQQResult"
+--             --            in  (Ref resName, [mkBinding (Exts.PVar undefined resName) e])
 
 transform
     :: GHC.DynFlags
@@ -435,7 +434,7 @@ transform
     -> GHC.Hsc (GHC.Located (HsModule GhcPs))
 transform dflags = SYB.everywhereM (SYB.mkM transform') where
     transform' :: LHsExpr GhcPs -> GHC.Hsc (LHsExpr GhcPs)
-    transform' e@(L l (HsApp xapp (L _ (HsVar _ (L _ appA))) (L _ appB)))
+    transform' (L _ (HsApp _xapp (L _ (HsVar _ (L _ appA))) (L _ appB)))
       | appA == GHC.mkVarUnqual "circuit" = do
       debug "HsApp!"
       -- debug $ "arrApp: " <> GHC.showPpr dflags arrApp
@@ -482,9 +481,8 @@ transform dflags = SYB.everywhereM (SYB.mkM transform') where
     --   debug ""
     --   pure e
 
-    transform' e@(L _ h) = do
-      -- debug $ show (Data.toConstr h)
-      return e
+    -- transform' (L _ h) = debug $ show (Data.toConstr h)
+    transform' e = pure e
 
 showC :: Data.Data a => a -> String
 showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
