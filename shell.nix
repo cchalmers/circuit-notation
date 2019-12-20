@@ -9,6 +9,5 @@ stdenv.mkDerivation {
   buildInputs = [
     ghc
     cabal-install
-    ghcid
   ];
 }

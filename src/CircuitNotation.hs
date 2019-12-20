@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveFoldable #-}
@@ -35,9 +36,12 @@ import           SrcLoc
 import           HscTypes (throwOneError)
 import qualified Outputable
 
+import Control.Exception
 
 import System.IO
 import qualified OccName
+
+import Control.Monad.State
 
 
 -- | The name given to a 'port', i.e. the name of something either to the left of a '<-' or to the
@@ -68,6 +72,29 @@ data CircuitQQ dec exp nm = CircuitQQ
   , circuitQQMasters :: PortDescription nm
   } deriving (Functor)
 
+data CircuitState = CircuitState
+  { cErrors   :: Bag Err.ErrMsg
+  }
+
+newtype CircuitM a = CircuitM (StateT CircuitState GHC.Hsc a)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadState CircuitState)
+
+liftHsc :: GHC.Hsc a -> CircuitM a
+liftHsc = CircuitM . lift
+
+instance GHC.HasDynFlags CircuitM where
+  getDynFlags = liftHsc GHC.getDynFlags
+
+runCircuitM :: CircuitM a -> GHC.Hsc a
+runCircuitM (CircuitM m) = do
+  let emptyCircuitState = CircuitState
+        { cErrors = emptyBag
+        }
+  (a, s) <- runStateT m emptyCircuitState
+  let errs = cErrors s
+  when (not $ isEmptyBag errs) $ liftIO . throwIO $ GHC.mkSrcErr errs
+  pure a
+
 -- PortDescription -----------------------------------------------------
 
 data PortDescription a
@@ -86,6 +113,120 @@ vecP pats = noLoc $ ListPat NoExt pats
 
 varP :: p ~ GhcPs => SrcSpan -> String -> LPat p
 varP loc nm = L loc $ VarPat NoExt (L loc $ var nm)
+
+-- Parsing -------------------------------------------------------------
+
+circuitQQ
+  :: p ~ GhcPs
+  => HsExpr p
+  -> CircuitQQ (LHsBind p) (LHsExpr p) PortName
+circuitQQ = \case
+  HsLam _ (MG _x alts _origin) -> let
+    [L _ (Match _matchX _matchContext [matchPats] matchGr)] = unL alts
+
+    slaves :: PortDescription PortName
+    slaves = bindSlave matchPats
+
+    GRHSs _grX grHss _grLocalBinds = matchGr
+    [L _ (GRHS _ _ (L _ body))] = grHss
+    HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finStmt))) = body
+
+    masters :: PortDescription PortName
+    masters =
+      case finStmt of
+        L _ (BodyStmt _bodyX bod _idr _idr') -> bindMaster bod
+        L _ stmt -> error $ "Unhandled finStmt " <> showC stmt
+
+    (lets, bindings) = handleStmts stmts
+
+    in CircuitQQ
+      { circuitQQSlaves = slaves
+      , circuitQQLets = lets
+      , circuitQQBinds = bindings
+      , circuitQQMasters = masters
+      }
+
+  e -> error $ "Unhandled circuit " <> showC e
+
+handleStmts
+  :: (p ~ GhcPs)
+  => [ExprLStmt p] -> ([LHsBind p], [Binding (LHsExpr p) PortName])
+handleStmts stmts = let
+  (localBinds, bindings) = partitionEithers $ map (handleStmt . unL) stmts
+  binds = flip concatMap localBinds \case
+    L _ (HsValBinds _ (ValBinds _ valBinds _sigs)) -> bagToList valBinds
+    _ -> error $ "Unhandled bind"
+
+  in (binds, bindings)
+
+handleStmt
+  :: (p ~ GhcPs, loc ~ SrcSpan, idL ~ GhcPs)
+  => StmtLR idL idR (LHsExpr p)
+  -> Either (LHsLocalBindsLR idL idR) (Binding (LHsExpr p) PortName)
+handleStmt = \case
+  LetStmt _xlet letBind -> Left letBind
+  BodyStmt _xbody body _idr _idr' -> Right (bodyBinding Nothing body)
+  BindStmt _xbody bind body _idr _idr' -> Right (bodyBinding (Just $ bindSlave bind) body)
+  _ -> error $ "Unhandled stmt"
+
+-- | Turn patterns to the left of a @<-@ into a PortDescription.
+bindSlave :: p ~ GhcPs => LPat p -> PortDescription PortName
+bindSlave = \case
+  L _ (VarPat _ (L loc rdrName)) -> Ref (PortName loc (fromRdrName rdrName))
+  L _ (TuplePat _ lpat _) -> Tuple $ fmap bindSlave lpat
+  L loc pat ->
+    PortErr loc
+            (Err.mkLocMessageAnn
+              Nothing
+              Err.SevFatal
+              loc
+              (Outputable.text $ "Unhandled pattern " <> show (Data.toConstr pat))
+              )
+
+-- | Turn expressions to the right of a @-<@ into a PortDescription.
+bindMaster :: p ~ GhcPs => LHsExpr p -> PortDescription PortName
+bindMaster = \case
+  L _ (HsVar _xvar (L loc rdrName)) -> Ref (PortName loc (fromRdrName rdrName))
+  L _ (ExplicitTuple _ tups _) -> let
+    vals = fmap (\(L _ (Present _ expr)) -> expr) tups
+    in Tuple $ fmap bindMaster vals
+  L _ (ExplicitList _ _syntaxExpr exprs) -> Vec $ fmap bindMaster exprs
+  L loc expr ->
+    case expr of
+      HsArrApp _xapp cir arg _ _ ->
+        case cir of
+          L _ (HsVar _ (L _ (GHC.Unqual occ)))
+            | OccName.occNameString occ == "idC" -> bindMaster arg
+            -- | otherwise -> let
+            --     resName = mkRdrUnqual (var "uncaptureable:name")
+            --     in (Ref resName, [bodyBinding (Just resName) arg])
+          _ -> error "Can only handle final idC at the moment!"
+      _ -> PortErr loc
+        (Err.mkLocMessageAnn
+          Nothing
+          Err.SevFatal
+          loc
+          (Outputable.text $ "Unhandled expression " <> show (Data.toConstr expr))
+          )
+
+-- Checking ------------------------------------------------------------
+
+checkCircuit :: p ~ GhcPs => CircuitQQ (LHsBind p) (LHsExpr p) PortName -> CircuitM ()
+checkCircuit cQQ = do
+  checkMatching cQQ
+
+checkMatching :: p ~ GhcPs => CircuitQQ (LHsBind p) (LHsExpr p) PortName -> CircuitM ()
+checkMatching CircuitQQ {..} = do
+  -- data CircuitQQ dec exp nm = CircuitQQ
+  --   { circuitQQSlaves  :: PortDescription nm
+  --   , circuitQQLets    :: [dec]
+  --   , circuitQQBinds   :: [Binding exp nm]
+  --   , circuitQQMasters :: PortDescription nm
+  --   } deriving (Functor)
+  pure ()
+
+
+-- Creating ------------------------------------------------------------
 
 bindWithSuffix :: p ~ GhcPs => GHC.DynFlags -> String -> PortDescription PortName -> LPat p
 bindWithSuffix dflags suffix = \case
@@ -221,27 +362,6 @@ deepShowD a = show (Data.toConstr a) <>
   -- " (" <> (unwords . fst) (SYB.gmapM (\x -> ([deepShowD x], x)) a) <> ")"
 
 
-handleStmt
-  :: (p ~ GhcPs, loc ~ SrcSpan, idL ~ GhcPs)
-  => StmtLR idL idR (LHsExpr p)
-  -> Either (LHsLocalBindsLR idL idR) (Binding (LHsExpr p) PortName)
-handleStmt = \case
-  LetStmt _xlet letBind -> Left letBind
-  BodyStmt _xbody body _idr _idr' -> Right (bodyBinding Nothing body)
-  BindStmt _xbody bind body _idr _idr' -> Right (bodyBinding (Just $ bindSlave bind) body)
-  _ -> error $ "Unhandled stmt"
-
-handleStmts
-  :: (p ~ GhcPs)
-  => [ExprLStmt p] -> ([LHsBind p], [Binding (LHsExpr p) PortName])
-handleStmts stmts = let
-  (localBinds, bindings) = partitionEithers $ map (handleStmt . unL) stmts
-  binds = flip concatMap localBinds \case
-    L _ (HsValBinds _ (ValBinds _ valBinds _sigs)) -> bagToList valBinds
-    _ -> error $ "Unhandled bind"
-
-  in (binds, bindings)
-
 bodyBinding
   :: (p ~ GhcPs, loc ~ SrcSpan)
   => Maybe (PortDescription PortName)
@@ -269,71 +389,38 @@ unsnoc [x] = Just ([], x)
 unsnoc (x:xs) = Just (x:a, b)
     where Just (a,b) = unsnoc xs
 
-circuitQQ
-  :: p ~ GhcPs
-  => HsExpr p
-  -> CircuitQQ (LHsBind p) (LHsExpr p) PortName
-circuitQQ = \case
-  HsLam _ (MG _x alts _origin) -> let
-    [L _ (Match _matchX _matchContext [matchPats] matchGr)] = unL alts
-
-    slaves :: PortDescription PortName
-    slaves = bindSlave matchPats
-
-    GRHSs _grX grHss _grLocalBinds = matchGr
-    [L _ (GRHS _ _ (L _ body))] = grHss
-    HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finStmt))) = body
-
-    masters :: PortDescription PortName
-    masters =
-      case finStmt of
-        L _ (BodyStmt _bodyX bod _idr _idr') -> bindMaster bod
-        L _ stmt -> error $ "Unhandled finStmt " <> showC stmt
-
-    (lets, bindings) = handleStmts stmts
-
-    in CircuitQQ
-      { circuitQQSlaves = slaves
-      , circuitQQLets = lets
-      , circuitQQBinds = bindings
-      , circuitQQMasters = masters
-      }
-
-  e -> error $ "Unhandled circuit " <> showC e
-
 mkCircuit
   :: p ~ GhcPs
-  => GHC.DynFlags
-  -> PortDescription PortName
+  => PortDescription PortName
   -- ^ slave ports
   -> [LHsBindLR p p]
   -- ^ let bindings
   -> PortDescription PortName
   -- ^ master ports
-  -> LHsExpr p
+  -> CircuitM (LHsExpr p)
   -- ^ circuit
-mkCircuit dflags slaves lets masters = let
-  pats = bindOutputs dflags masters slaves
-  res  = createInputs slaves masters
+mkCircuit slaves lets masters = do
+  dflags <- GHC.getDynFlags
+  let pats = bindOutputs dflags masters slaves
+      res  = createInputs slaves masters
 
-  body :: LHsExpr GhcPs
-  body = letE noSrcSpan lets res
+      body :: LHsExpr GhcPs
+      body = letE noSrcSpan lets res
 
-  in circuitConstructor noSrcSpan `appE` lamE [pats] body
+  pure $ circuitConstructor noSrcSpan `appE` lamE [pats] body
 
-circuitQQExp
+circuitQQExpM
   :: p ~ GhcPs
-  => GHC.DynFlags
-  -> CircuitQQ (LHsBind p) (LHsExpr p) PortName
-  -> LHsExpr p
-circuitQQExp dynflags CircuitQQ {..} = do
+  => CircuitQQ (LHsBind p) (LHsExpr p) PortName
+  -> CircuitM (LHsExpr p)
+circuitQQExpM c@CircuitQQ {..} = do
+  checkCircuit c
+  dynflags <- GHC.getDynFlags
   let decs = concat
         [ circuitQQLets
         , fmap (noLoc . decFromBinding dynflags) circuitQQBinds
         ]
-      -- f :: HsBind GhcPs -> HsLocalBinds GhcPs
-      -- f bind = HsValBinds NoExt $ ValBinds NoExt bind []
-  mkCircuit dynflags circuitQQSlaves decs circuitQQMasters
+  mkCircuit circuitQQSlaves decs circuitQQMasters
 
 lamE :: p ~ GhcPs => [LPat p] -> LHsExpr p -> LHsExpr p
 lamE pats expr = noLoc $ HsLam NoExt mg
@@ -351,47 +438,6 @@ lamE pats expr = noLoc $ HsLam NoExt mg
 
     grHs :: LGRHS GhcPs (LHsExpr GhcPs)
     grHs = noLoc $ GRHS NoExt [] expr
-
--- | Turn patterns to the left of a @<-@ into a PortDescription.
-bindSlave :: p ~ GhcPs => LPat p -> PortDescription PortName
-bindSlave = \case
-  L _ (VarPat _ (L loc rdrName)) -> Ref (PortName loc (fromRdrName rdrName))
-  L _ (TuplePat _ lpat _) -> Tuple $ fmap bindSlave lpat
-  L loc pat ->
-    PortErr loc
-            (Err.mkLocMessageAnn
-              Nothing
-              Err.SevFatal
-              loc
-              (Outputable.text $ "Unhandled pattern " <> show (Data.toConstr pat))
-              )
-
--- | Turn expressions to the right of a @-<@ into a PortDescription.
-bindMaster :: p ~ GhcPs => LHsExpr p -> PortDescription PortName
-bindMaster = \case
-  L _ (HsVar _xvar (L loc rdrName)) -> Ref (PortName loc (fromRdrName rdrName))
-  L _ (ExplicitTuple _ tups _) -> let
-    vals = fmap (\(L _ (Present _ expr)) -> expr) tups
-    in Tuple $ fmap bindMaster vals
-  L _ (ExplicitList _ _syntaxExpr exprs) -> Vec $ fmap bindMaster exprs
-  L loc expr ->
-    case expr of
-      HsArrApp _xapp cir arg _ _ ->
-        case cir of
-          L _ (HsVar _ (L _ (GHC.Unqual occ)))
-            | OccName.occNameString occ == "idC" -> bindMaster arg
-            -- | otherwise -> let
-            --     resName = mkRdrUnqual (var "uncaptureable:name")
-            --     in (Ref resName, [bodyBinding (Just resName) arg])
-          _ -> error "Can only handle final idC at the moment!"
-      _ -> PortErr loc
-        (Err.mkLocMessageAnn
-          Nothing
-          Err.SevFatal
-          loc
-          (Outputable.text $ "Unhandled expression " <> show (Data.toConstr expr))
-          )
-      -- showC loc
 
 -- finalStmt
 --   :: p ~ GhcPs
@@ -443,7 +489,7 @@ transform dflags = SYB.everywhereM (SYB.mkM transform') where
       let pp :: GHC.Outputable a => a -> String
           pp = GHC.showPpr dflags
           cqq = circuitQQ appB
-          expr = circuitQQExp dflags cqq
+      expr <- runCircuitM $ circuitQQExpM cqq
       debug $ pp expr
       pure expr
 
