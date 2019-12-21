@@ -11,6 +11,8 @@
 {-# LANGUAGE TypeFamilies #-}
 module CircuitNotation (plugin) where
 
+-- import Debug.Trace
+
 import System.IO.Unsafe
 
 import FastString (mkFastString)
@@ -21,7 +23,7 @@ import Data.Either (partitionEithers)
 
 import Bag
 
-import Data.Typeable
+-- import Data.Typeable
 import Control.Monad.IO.Class (MonadIO (..))
 
 import qualified Data.Generics as SYB
@@ -116,37 +118,57 @@ varP loc nm = L loc $ VarPat NoExt (L loc $ var nm)
 
 -- Parsing -------------------------------------------------------------
 
-circuitQQ
+err :: SrcSpan -> String -> CircuitM Err.ErrMsg
+err loc msg = do
+  dflags <- GHC.getDynFlags
+  let errMsg = Err.mkLocMessageAnn Nothing Err.SevFatal loc (Outputable.text msg)
+  pure $
+    Err.mkErrMsg dflags loc Outputable.alwaysQualify errMsg
+
+-- | "parse" a circuit, i.e. convert it from ghc's ast to our representation of a circuit.
+parseCircuit
   :: p ~ GhcPs
-  => HsExpr p
-  -> CircuitQQ (LHsBind p) (LHsExpr p) PortName
-circuitQQ = \case
-  HsLam _ (MG _x alts _origin) -> let
+  => LHsExpr p
+  -> CircuitM (CircuitQQ (LHsBind p) (LHsExpr p) PortName)
+parseCircuit = \case
+  L _ (HsLam _ (MG _x alts _origin)) -> let
     [L _ (Match _matchX _matchContext [matchPats] matchGr)] = unL alts
 
     slaves :: PortDescription PortName
     slaves = bindSlave matchPats
 
     GRHSs _grX grHss _grLocalBinds = matchGr
-    [L _ (GRHS _ _ (L _ body))] = grHss
-    HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finStmt))) = body
+    [L _ (GRHS _ _ (L loc body))] = grHss
+    in case body of
+      HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finStmt))) -> do
+        masters <-
+          case finStmt of
+            L _ (BodyStmt _bodyX bod _idr _idr') -> pure $ bindMaster bod
+            L finLoc stmt ->
+              throwOneError =<< err finLoc ("unhandled final stmt " <> show (Data.toConstr stmt))
 
-    masters :: PortDescription PortName
-    masters =
-      case finStmt of
-        L _ (BodyStmt _bodyX bod _idr _idr') -> bindMaster bod
-        L _ stmt -> error $ "Unhandled finStmt " <> showC stmt
+        let (lets, bindings) = handleStmts stmts
 
-    (lets, bindings) = handleStmts stmts
+        pure CircuitQQ
+          { circuitQQSlaves = slaves
+          , circuitQQLets = lets
+          , circuitQQBinds = bindings
+          , circuitQQMasters = masters
+          }
+      -- the simple case without do notation
+      master ->
+        let masters = bindMaster (L loc master)
+        in pure CircuitQQ
+          { circuitQQSlaves = slaves
+          , circuitQQLets = []
+          , circuitQQBinds = []
+          , circuitQQMasters = masters
+          }
 
-    in CircuitQQ
-      { circuitQQSlaves = slaves
-      , circuitQQLets = lets
-      , circuitQQBinds = bindings
-      , circuitQQMasters = masters
-      }
+  L _ (HsPar _ lexp) -> parseCircuit lexp
 
-  e -> error $ "Unhandled circuit " <> showC e
+  L loc e -> do
+    throwOneError =<< err loc ("Unable to handle circuit expression " <> show (Data.toConstr e))
 
 handleStmts
   :: (p ~ GhcPs)
@@ -345,7 +367,7 @@ pluginImpl :: GHC.ModSummary -> GHC.HsParsedModule -> GHC.Hsc GHC.HsParsedModule
 pluginImpl _modSummary m = do
     dflags <- GHC.getDynFlags
     debug $ GHC.showPpr dflags (GHC.hpm_module m )
-    hpm_module' <- transform dflags (GHC.hpm_module m)
+    hpm_module' <- transform (GHC.hpm_module m)
     let module' = m { GHC.hpm_module = hpm_module' }
     return module'
 
@@ -474,64 +496,44 @@ lamE pats expr = noLoc $ HsLam NoExt mg
 --             --                resName = Exts.Ident l "cQQResult"
 --             --            in  (Ref resName, [mkBinding (Exts.PVar undefined resName) e])
 
+isCircuitVar :: p ~ GhcPs => HsExpr p -> Bool
+isCircuitVar = \case
+  HsVar _ (L _ v) -> v == GHC.mkVarUnqual "circuit"
+  _               -> False
+
+isDollar :: p ~ GhcPs => HsExpr p -> Bool
+isDollar = \case
+  HsVar _ (L _ v) -> v == GHC.mkVarUnqual "$"
+  _               -> False
+
 transform
-    :: GHC.DynFlags
-    -> GHC.Located (HsModule GhcPs)
+    :: GHC.Located (HsModule GhcPs)
     -> GHC.Hsc (GHC.Located (HsModule GhcPs))
-transform dflags = SYB.everywhereM (SYB.mkM transform') where
-    transform' :: LHsExpr GhcPs -> GHC.Hsc (LHsExpr GhcPs)
-    transform' (L _ (HsApp _xapp (L _ (HsVar _ (L _ appA))) (L _ appB)))
-      | appA == GHC.mkVarUnqual "circuit" = do
+transform = SYB.everywhereM (SYB.mkM transform') where
+  transform' :: LHsExpr GhcPs -> GHC.Hsc (LHsExpr GhcPs)
+  transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
+    | isCircuitVar circuitVar = do
       debug "HsApp!"
-      -- debug $ "arrApp: " <> GHC.showPpr dflags arrApp
-      debug $ "appA: " <> showC appA <> " " <> GHC.showPpr dflags appA <> " "
-      -- debug $ "appB: " <> GHC.showPpr dflags appB <> "\n" <> showC appB
-      let pp :: GHC.Outputable a => a -> String
-          pp = GHC.showPpr dflags
-          cqq = circuitQQ appB
-      expr <- runCircuitM $ circuitQQExpM cqq
-      debug $ pp expr
-      pure expr
+      runCircuitM $ transformCircuit lappB
 
-    -- transform' e@(L l (HsArrApp arrApp expa exp2 ty b)) = do
-    --   debug "HsArrApp!"
-    --   debug $ "arrApp: " <> GHC.showPpr dflags arrApp
-    --   debug $ "expa: " <> GHC.showPpr dflags expa
-    --   debug $ "exp2: " <> GHC.showPpr dflags exp2
-    --   -- debug $ "ty: " <> GHC.showPpr dflags ty
-    --   debug $ "b: " <> GHC.showPpr dflags b
-    --   debug ""
-    --   pure e
-    -- transform' e@(L l (HsArrForm arrForm expa mfixity cmds)) = do
-    --   debug "HsArrForm!"
-    --   debug $ "arrForm: " <> GHC.showPpr dflags arrForm
-    --   debug $ "expa: " <> GHC.showPpr dflags expa
-    --   debug $ "exp2: " <> GHC.showPpr dflags mfixity
-    --   -- debug $ "ty: " <> GHC.showPpr dflags ty
-    --   debug $ "b: " <> GHC.showPpr dflags cmds
-    --   debug ""
-    --   pure e
-    -- transform' e@(L l (HsProc xproc pat cmdtop)) = do
-    --   debug "HsProc!"
-    --   debug $ "xproc: " <> GHC.showPpr dflags xproc
-    --   debug $ "pat: " <> GHC.showPpr dflags pat
-    --   -- debug $ "cmdtop: " <> GHC.showPpr dflags cmdtop
-    --   debug "cmdtop"
-    --   let showCmd = \case
-    --         HsCmdTop xcmd (L _ hsCmd) -> do
-    --           debug $ "HsCmdTop " <> showC xcmd <> " " <> showC hsCmd
-    --         XCmdTop xxcmd  -> do
-    --           debug $ "XXCmdTop " <> showC xxcmd
-    --   for_ cmdtop showCmd
-    --     -- debug $ show (Data.toConstr cmd)
-    --   debug ""
-    --   pure e
+  transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
+    | isCircuitVar circuitVar && isDollar infixVar = do
+      runCircuitM $ transformCircuit appR
 
-    -- transform' (L _ h) = debug $ show (Data.toConstr h)
-    transform' e = pure e
+  transform' e = pure e
 
-showC :: Data.Data a => a -> String
-showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
+transformCircuit :: p ~ GhcPs => LHsExpr p -> CircuitM (LHsExpr p)
+transformCircuit e = do
+  dflags <- GHC.getDynFlags
+  let pp :: GHC.Outputable a => a -> String
+      pp = GHC.showPpr dflags
+  cqq <- parseCircuit e
+  expr <- circuitQQExpM cqq
+  debug $ pp expr
+  pure expr
+
+-- showC :: Data.Data a => a -> String
+-- showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
 
 --
 --
