@@ -4,7 +4,7 @@
 {-# LANGUAGE Arrows  #-}
 {-# LANGUAGE TypeApplications  #-}
 
-{-# LANGUAGE ExplicitForAll  #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE DeriveFunctor #-}
 ---- | Hack idiom-brackets using Source Plugin.
@@ -90,6 +90,9 @@ data Circuit a b = Circuit {runCircuit :: (M2S a, S2M b) -> (M2S b, S2M a)}
 idC :: Circuit a a
 idC = Circuit id
 
+idCircuit :: Circuit a a
+idCircuit = idC
+
 swapC :: Circuit (a,b) (b,a)
 swapC = circuit \(a,b) -> (b,a)
 
@@ -112,10 +115,15 @@ sigExpr sig = circuit do
   i <- circuitC -< Signal sig
   idC -< i
 
+-- sigPat :: (( Signal Int -> Signal Int ))
 sigPat :: Circuit (Signal Int) (Signal Int)
 sigPat = circuit \(Signal a) -> do
   i <- (idC :: Circuit (Signal Int) (Signal Int)) -< Signal a
   idC -< i
+
+swapTest :: forall a b. Circuit (a,b) (b,a)
+swapTest = circuit \(a,b) -> do
+  (idCircuit :: Circuit (b,a) (b,a)) -< (b,a)
 
 -- myDesire :: Circuit Int Char
 -- myDesire = Circuit (\(aM2S,bS2M) -> let
