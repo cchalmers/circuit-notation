@@ -125,22 +125,31 @@ err loc msg = do
   pure $
     Err.mkErrMsg dflags loc Outputable.alwaysQualify errMsg
 
+-- | Extract a simple lambda into inputs and body.
+simpleLambda :: HsExpr p -> Maybe ([LPat p], LHsExpr p)
+simpleLambda expr = do
+  HsLam _ (MG _x alts _origin) <- Just expr
+  L _ [L _ (Match _matchX _matchContext matchPats matchGr)] <- Just alts
+  GRHSs _grX grHss _grLocalBinds <- Just matchGr
+  [L _ (GRHS _ _ body)] <- Just grHss
+  Just (matchPats, body)
+
 -- | "parse" a circuit, i.e. convert it from ghc's ast to our representation of a circuit.
 parseCircuit
   :: p ~ GhcPs
   => LHsExpr p
   -> CircuitM (CircuitQQ (LHsBind p) (LHsExpr p) PortName)
 parseCircuit = \case
-  L _ (HsLam _ (MG _x alts _origin)) -> let
-    [L _ (Match _matchX _matchContext [matchPats] matchGr)] = unL alts
+  -- strip out parenthesis
+  L _ (HsPar _ lexp) -> parseCircuit lexp
+
+  L _loc (simpleLambda -> Just ([matchPats], body)) -> let
 
     slaves :: PortDescription PortName
     slaves = bindSlave matchPats
 
-    GRHSs _grX grHss _grLocalBinds = matchGr
-    [L _ (GRHS _ _ (L loc body))] = grHss
     in case body of
-      HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finStmt))) -> do
+      L _ (HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finStmt)))) -> do
         masters <-
           case finStmt of
             L _ (BodyStmt _bodyX bod _idr _idr') -> pure $ bindMaster bod
@@ -155,8 +164,9 @@ parseCircuit = \case
           , circuitQQBinds = bindings
           , circuitQQMasters = masters
           }
+
       -- the simple case without do notation
-      master ->
+      L loc master ->
         let masters = bindMaster (L loc master)
         in pure CircuitQQ
           { circuitQQSlaves = slaves
@@ -165,7 +175,7 @@ parseCircuit = \case
           , circuitQQMasters = masters
           }
 
-  L _ (HsPar _ lexp) -> parseCircuit lexp
+  -- TODO handle case without a lambda
 
   L loc e -> do
     throwOneError =<< err loc ("Unable to handle circuit expression " <> show (Data.toConstr e))
@@ -222,7 +232,13 @@ bindMaster = \case
             -- | otherwise -> let
             --     resName = mkRdrUnqual (var "uncaptureable:name")
             --     in (Ref resName, [bodyBinding (Just resName) arg])
-          _ -> error "Can only handle final idC at the moment!"
+          _ -> PortErr loc (Err.mkLocMessageAnn
+            Nothing
+            Err.SevFatal
+            loc
+            (Outputable.text
+              $ "Can only handle idC as last statement " <> show (Data.toConstr expr))
+            )
       _ -> PortErr loc
         (Err.mkLocMessageAnn
           Nothing
