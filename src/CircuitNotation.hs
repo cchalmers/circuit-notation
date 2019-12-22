@@ -165,9 +165,9 @@ circuitBody slaves = \case
   L _ (HsPar _ lexp) -> circuitBody slaves lexp
 
   L _ (HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finStmt)))) -> do
-    masters <-
+    (masters, masterBindings) <-
       case finStmt of
-        L _ (BodyStmt _bodyX bod _idr _idr') -> pure $ bindMaster bod
+        L _ (BodyStmt _bodyX bod _idr _idr') -> pure $ finalStmt bod
         L finLoc stmt ->
           throwOneError =<< err finLoc ("unhandled final stmt " <> show (Data.toConstr stmt))
 
@@ -176,7 +176,7 @@ circuitBody slaves = \case
     pure CircuitQQ
       { circuitQQSlaves = slaves
       , circuitQQLets = lets
-      , circuitQQBinds = bindings
+      , circuitQQBinds = masterBindings ++ bindings
       , circuitQQMasters = masters
       }
 
@@ -232,37 +232,40 @@ bindSlave = \case
 
 -- | Turn expressions to the right of a @-<@ into a PortDescription.
 bindMaster :: p ~ GhcPs => LHsExpr p -> PortDescription PortName
-bindMaster = \case
-  L _ (HsVar _xvar (L loc rdrName)) -> Ref (PortName loc (fromRdrName rdrName))
-  L _ (ExplicitTuple _ tups _) -> let
-    vals = fmap (\(L _ (Present _ expr)) -> expr) tups
+bindMaster (L loc expr) = case expr of
+  HsVar _xvar (L vloc rdrName) -> Ref (PortName vloc (fromRdrName rdrName))
+  ExplicitTuple _ tups _ -> let
+    vals = fmap (\(L _ (Present _ e)) -> e) tups
     in Tuple $ fmap bindMaster vals
-  L _ (ExplicitList _ _syntaxExpr exprs) -> Vec $ fmap bindMaster exprs
-  L loc expr ->
-    case expr of
-      HsArrApp _xapp cir arg _ _ ->
-        case cir of
-          L _ (HsVar _ (L _ (GHC.Unqual occ)))
-            | OccName.occNameString occ == "idC" -> bindMaster arg
-            -- | otherwise -> let
-            --     resName = mkRdrUnqual (var "uncaptureable:name")
-            --     in (Ref resName, [bodyBinding (Just resName) arg])
-          _ -> PortErr loc (Err.mkLocMessageAnn
-            Nothing
-            Err.SevFatal
-            loc
-            (Outputable.text
-              $ "Can only handle idC as last statement " <> show (Data.toConstr expr))
-            )
-      HsApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig
-        | OccName.occNameString occ == "Signal" -> SignalExpr sig
-      _ -> PortErr loc
-        (Err.mkLocMessageAnn
-          Nothing
-          Err.SevFatal
-          loc
-          (Outputable.text $ "Unhandled expression " <> show (Data.toConstr expr))
-          )
+  ExplicitList _ _syntaxExpr exprs -> Vec $ fmap bindMaster exprs
+  HsApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig
+    | OccName.occNameString occ == "Signal" -> SignalExpr sig
+  _ -> PortErr loc
+    (Err.mkLocMessageAnn
+      Nothing
+      Err.SevFatal
+      loc
+      (Outputable.text $ "Unhandled expression " <> show (Data.toConstr expr))
+      )
+
+-- | The final statement of a circuit do block.
+finalStmt
+  :: p ~ GhcPs
+  => LHsExpr p
+  -> (PortDescription PortName, [Binding (LHsExpr GhcPs) PortName])
+finalStmt (L loc expr) = case expr of
+ -- special case for idC as the final statement, gives better type inferences and generates nicer
+ -- code
+  HsArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) arg _ _
+    | OccName.occNameString occ == "idC" -> (bindMaster arg, [])
+
+  -- Otherwise create a binding and use that as the master. This is equivalent to changing
+  --   c -< x
+  -- into
+  --   finalStmt <- c -< x
+  --   idC -< finalStmt
+  _ -> let ref = Ref (PortName loc "final:stmt")
+       in (ref, [bodyBinding (Just ref) (L loc expr)])
 
 -- Checking ------------------------------------------------------------
 
@@ -498,41 +501,6 @@ lamE pats expr = noLoc $ HsLam NoExt mg
 
     grHs :: LGRHS GhcPs (LHsExpr GhcPs)
     grHs = noLoc $ GRHS NoExt [] expr
-
--- finalStmt
---   :: p ~ GhcPs
---   => LHsExpr p
---   -> (PortDescription PortName, [Binding (LHsExpr GhcPs) PortName])
--- finalStmt = \case
---   L loc (HsArrApp _ cir arg _ _) ->
---     case cir of
---           L _ (HsVar _ (L _ (GHC.Unqual occ)))
---             | OccName.occNameString occ == "idC" -> (bindMaster arg, [])
---             -- | otherwise  -> let
---             --     resName = PortName loc (mkFastString "uncaptureable:name")
---             --     binding :: Binding (LHsExpr GhcPs) PortName
---             --     binding = bodyBinding (Just _) (varE loc (var "uncaptureable:name"))
---             --      in (Ref resName, [binding])
---             --     -- in (Ref resName, [bodyBinding (Just arg) resName])
--- 
---       -- HsArrApp _xapp _idC (L _ var) _ _ ->
---       --   case var of
---       --     HsVar _ (L l rdr) ->
---       --       case rdr of
---       --         GHC.Unqual occ ->
---       --           Ref (PortName l (mkFastString $ OccName.occNameString occ))
--- 
---       -- Ref (PortName loc (mkFastString "bindMaster: Can't handle this pattern yet"))
---   -- _ -> error "can't handle this pattern yet"
--- 
---             -- case out of
---             --   Exts.Qualifier l e@(Exts.InfixApp _ var ArrIn source) ->
---             --     case var of
---             --       -- with idC there's no need for extra bindings
---             --       Exts.Var _ (Exts.UnQual _ (Exts.Ident _ "idC")) -> (portExp source, [])
---             --       _ -> let -- TODO: this should be a non-captureable name
---             --                resName = Exts.Ident l "cQQResult"
---             --            in  (Ref resName, [mkBinding (Exts.PVar undefined resName) e])
 
 isCircuitVar :: p ~ GhcPs => HsExpr p -> Bool
 isCircuitVar = \case
