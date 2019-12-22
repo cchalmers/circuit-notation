@@ -9,7 +9,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeFamilies #-}
-module CircuitNotation (plugin) where
+module CircuitNotation (plugin, showC) where
 
 -- import Debug.Trace
 
@@ -23,7 +23,7 @@ import Data.Either (partitionEithers)
 
 import Bag
 
--- import Data.Typeable
+import Data.Typeable
 import Control.Monad.IO.Class (MonadIO (..))
 
 import qualified Data.Generics as SYB
@@ -104,6 +104,8 @@ data PortDescription a
   | Vec [PortDescription a]
   | Ref a
   | Lazy (PortDescription a)
+  | SignalExpr (LHsExpr GhcPs)
+  | SignalPat (LPat GhcPs)
   | PortErr SrcSpan Err.MsgDoc
   deriving (Foldable, Functor, Traversable)
 
@@ -216,6 +218,9 @@ bindSlave :: p ~ GhcPs => LPat p -> PortDescription PortName
 bindSlave = \case
   L _ (VarPat _ (L loc rdrName)) -> Ref (PortName loc (fromRdrName rdrName))
   L _ (TuplePat _ lpat _) -> Tuple $ fmap bindSlave lpat
+  L _ (ParPat _ lpat) -> bindSlave lpat
+  L _ (ConPatIn (L _ (GHC.Unqual occ)) (PrefixCon [lpat]))
+    | OccName.occNameString occ == "Signal" -> SignalPat lpat
   L loc pat ->
     PortErr loc
             (Err.mkLocMessageAnn
@@ -249,6 +254,8 @@ bindMaster = \case
             (Outputable.text
               $ "Can only handle idC as last statement " <> show (Data.toConstr expr))
             )
+      HsApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig
+        | OccName.occNameString occ == "Signal" -> SignalExpr sig
       _ -> PortErr loc
         (Err.mkLocMessageAnn
           Nothing
@@ -284,6 +291,8 @@ bindWithSuffix dflags suffix = \case
   PortErr loc msgdoc -> unsafePerformIO . throwOneError $
     Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "Unhandled bind") msgdoc
   Lazy _ -> error "bindWithSuffix Lazy not handled" -- tildeP $ bindWithSuffix suffix p
+  SignalExpr (L l _) -> L l (WildPat NoExt)
+  SignalPat lpat -> lpat
 
 bindOutputs
   :: p ~ GhcPs
@@ -309,6 +318,8 @@ expWithSuffix suffix = \case
   -- lazyness only affects the pattern side
   Lazy p   -> expWithSuffix suffix p
   PortErr _ _ -> error "expWithSuffix PortErr!"
+  SignalExpr lexpr -> lexpr
+  SignalPat (L l _) -> tupE l []
 
 createInputs
   :: p ~ GhcPs
@@ -559,8 +570,8 @@ transformCircuit e = do
   debug $ pp expr
   pure expr
 
--- showC :: Data.Data a => a -> String
--- showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
+showC :: Data.Data a => a -> String
+showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
 
 --
 --

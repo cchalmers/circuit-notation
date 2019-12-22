@@ -3,7 +3,10 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE Arrows  #-}
 {-# LANGUAGE TypeApplications  #-}
+
 {-# LANGUAGE ExplicitForAll  #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DeriveFunctor #-}
 ---- | Hack idiom-brackets using Source Plugin.
 ----
 ---- As nobody (?) writes their lists as `([1, 2, 3])`,
@@ -21,6 +24,38 @@
 {-# OPTIONS -fplugin=CircuitNotation #-}
 
 module Example where
+
+data Signal a = a :- Signal a
+  deriving Functor
+
+instance Applicative Signal where
+  pure a = a :- pure a
+  (f :- fs) <*> (a :- as) = f a :- (fs <*> as)
+
+type family M2S a
+type family S2M a
+
+data DF a
+data DFM2S a = DFM2S Bool a
+data DFS2M = DFS2M Bool
+
+type instance M2S (DF a) = Signal (DFM2S a)
+type instance S2M (DF a) = Signal DFS2M
+
+type instance M2S [a] = [M2S a]
+type instance S2M [a] = [S2M a]
+
+type instance M2S () = ()
+type instance S2M () = ()
+
+type instance M2S (a,b) = (M2S a, M2S b)
+type instance S2M (a,b) = (S2M a, S2M b)
+
+type instance M2S (a,b,c) = (M2S a, M2S b, M2S c)
+type instance S2M (a,b,c) = (S2M a, S2M b, S2M c)
+
+type instance M2S (Signal a) = Signal a
+type instance S2M (Signal a) = ()
 
 -- idC :: Int
 -- idC = 5
@@ -44,25 +79,43 @@ module Example where
 
 -- (><) :: Circuit (a -> b -> c) -> Circuit a -> Circuit (b -> c)
 
-data Circuit a b = Circuit {runCircuit :: (a,b) -> (b,a)}
+data Circuit a b = Circuit {runCircuit :: (M2S a, S2M b) -> (M2S b, S2M a)}
 
-myCircuit :: Circuit [Int] Char
-myCircuit = undefined
+-- myCircuit :: Circuit [Int] Char
+-- myCircuit = undefined
 
-myCircuitRev :: Circuit Char Int
-myCircuitRev = undefined
+-- myCircuitRev :: Circuit Char Int
+-- myCircuitRev = undefined
+
+idC :: Circuit a a
+idC = Circuit id
 
 swapC :: Circuit (a,b) (b,a)
 swapC = circuit \(a,b) -> (b,a)
 
-circuitA :: Circuit () Int
-circuitA = Circuit (\_ -> (3, ()))
+circuitA :: Circuit () (DF Int)
+circuitA = Circuit (\_ -> (pure (DFM2S True 3), ()))
 
-f :: Circuit () Int
-f = circuit do
+circuitB :: Circuit () (Signal Int)
+circuitB = Circuit (\_ -> (pure 3, ()))
+
+circuitC :: Circuit (Signal Int) (DF Int)
+circuitC = Circuit (\(as,_) -> (DFM2S True <$> as, ()))
+
+noLambda :: Circuit () (DF Int)
+noLambda = circuit do
   i <- circuitA
   idC -< i
 
+sigExpr :: Signal Int -> Circuit () (DF Int)
+sigExpr sig = circuit do
+  i <- circuitC -< Signal sig
+  idC -< i
+
+sigPat :: Circuit (Signal Int) (Signal Int)
+sigPat = circuit \(Signal a) -> do
+  i <- (idC :: Circuit (Signal Int) (Signal Int)) -< Signal a
+  idC -< i
 
 -- myDesire :: Circuit Int Char
 -- myDesire = Circuit (\(aM2S,bS2M) -> let
@@ -78,14 +131,14 @@ f = circuit do
 -- ah :: (Int,Int)
 -- ah = (7,11)
 
-tupCir1 :: Circuit (Int, Char) (Char, Int)
-tupCir1 = circuit \ input -> do
-  (c,i) <- swapC @Int -< input
-  i' <- myCircuit -< [i]
-  let myIdCircuit = circuit \port -> port
-  c' <- myCircuitRev -< c
-  c'' <- myIdCircuit -< c'
-  idC -< (i', c'')
+-- tupCir1 :: Circuit (Int, Char) (Char, Int)
+-- tupCir1 = circuit \ input -> do
+--   (c,i) <- swapC @Int -< input
+--   i' <- myCircuit -< [i]
+--   let myIdCircuit = circuit \port -> port
+--   c' <- myCircuitRev -< c
+--   c'' <- myIdCircuit -< c'
+--   idC -< (i', c'')
 
 -- tupleCircuit :: Circuit Int Char
 -- tupleCircuit = id $ circuit \a -> do
