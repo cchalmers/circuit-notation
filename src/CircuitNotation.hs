@@ -134,7 +134,9 @@ simpleLambda expr = do
   [L _ (GRHS _ _ body)] <- Just grHss
   Just (matchPats, body)
 
--- | "parse" a circuit, i.e. convert it from ghc's ast to our representation of a circuit.
+
+-- | "parse" a circuit, i.e. convert it from ghc's ast to our representation of a circuit. This is
+-- the expression following the 'circuit' keyword.
 parseCircuit
   :: p ~ GhcPs
   => LHsExpr p
@@ -143,53 +145,61 @@ parseCircuit = \case
   -- strip out parenthesis
   L _ (HsPar _ lexp) -> parseCircuit lexp
 
-  L _loc (simpleLambda -> Just ([matchPats], body)) -> let
+  -- a lambda to match the slave ports
+  L _loc (simpleLambda -> Just ([matchPats], body)) ->
+    circuitBody (bindSlave matchPats) body
 
-    slaves :: PortDescription PortName
-    slaves = bindSlave matchPats
+  -- a version without a lamda (i.e. no slaves)
+  e -> circuitBody (Tuple []) e
 
-    in case body of
-      L _ (HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finStmt)))) -> do
-        masters <-
-          case finStmt of
-            L _ (BodyStmt _bodyX bod _idr _idr') -> pure $ bindMaster bod
-            L finLoc stmt ->
-              throwOneError =<< err finLoc ("unhandled final stmt " <> show (Data.toConstr stmt))
+-- | The main part of a circuit expression. Either a do block or simple rearranging case.
+circuitBody
+  :: p ~ GhcPs
+  => PortDescription PortName
+  -> LHsExpr p
+  -> CircuitM (CircuitQQ (LHsBind p) (LHsExpr p) PortName)
+circuitBody slaves = \case
+  -- strip out parenthesis
+  L _ (HsPar _ lexp) -> circuitBody slaves lexp
 
-        let (lets, bindings) = handleStmts stmts
+  L _ (HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finStmt)))) -> do
+    masters <-
+      case finStmt of
+        L _ (BodyStmt _bodyX bod _idr _idr') -> pure $ bindMaster bod
+        L finLoc stmt ->
+          throwOneError =<< err finLoc ("unhandled final stmt " <> show (Data.toConstr stmt))
 
-        pure CircuitQQ
-          { circuitQQSlaves = slaves
-          , circuitQQLets = lets
-          , circuitQQBinds = bindings
-          , circuitQQMasters = masters
-          }
+    (lets, bindings) <- handleStmts stmts
 
-      -- the simple case without do notation
-      L loc master ->
-        let masters = bindMaster (L loc master)
-        in pure CircuitQQ
-          { circuitQQSlaves = slaves
-          , circuitQQLets = []
-          , circuitQQBinds = []
-          , circuitQQMasters = masters
-          }
+    pure CircuitQQ
+      { circuitQQSlaves = slaves
+      , circuitQQLets = lets
+      , circuitQQBinds = bindings
+      , circuitQQMasters = masters
+      }
 
-  -- TODO handle case without a lambda
+  -- the simple case without do notation
+  L loc master ->
+    let masters = bindMaster (L loc master)
+    in pure CircuitQQ
+      { circuitQQSlaves = slaves
+      , circuitQQLets = []
+      , circuitQQBinds = []
+      , circuitQQMasters = masters
+      }
 
-  L loc e -> do
-    throwOneError =<< err loc ("Unable to handle circuit expression " <> show (Data.toConstr e))
-
+-- | Converts the statements of a circuit do block to either let bindings or port bindings.
 handleStmts
   :: (p ~ GhcPs)
-  => [ExprLStmt p] -> ([LHsBind p], [Binding (LHsExpr p) PortName])
-handleStmts stmts = let
-  (localBinds, bindings) = partitionEithers $ map (handleStmt . unL) stmts
-  binds = flip concatMap localBinds \case
-    L _ (HsValBinds _ (ValBinds _ valBinds _sigs)) -> bagToList valBinds
-    _ -> error $ "Unhandled bind"
+  => [ExprLStmt p]
+  -> CircuitM ([LHsBind p], [Binding (LHsExpr p) PortName])
+handleStmts stmts = do
+  let (localBinds, bindings) = partitionEithers $ map (handleStmt . unL) stmts
+  binds <- sequence $ flip fmap localBinds \case
+    L _ (HsValBinds _ (ValBinds _ valBinds _sigs)) -> pure $ bagToList valBinds
+    L loc stmt -> throwOneError =<< err loc ("unhandled statement" <> show (Data.toConstr stmt))
 
-  in (binds, bindings)
+  pure (concat binds, bindings)
 
 handleStmt
   :: (p ~ GhcPs, loc ~ SrcSpan, idL ~ GhcPs)
@@ -381,6 +391,7 @@ plugin = GHC.defaultPlugin
 
 pluginImpl :: GHC.ModSummary -> GHC.HsParsedModule -> GHC.Hsc GHC.HsParsedModule
 pluginImpl _modSummary m = do
+    debug "hello"
     dflags <- GHC.getDynFlags
     debug $ GHC.showPpr dflags (GHC.hpm_module m )
     hpm_module' <- transform (GHC.hpm_module m)

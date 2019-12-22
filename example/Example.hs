@@ -52,9 +52,17 @@ myCircuit = undefined
 myCircuitRev :: Circuit Char Int
 myCircuitRev = undefined
 
-swapC :: forall a b. Circuit (a,b) (b,a)
-swapC = circuit \ (a,b) -> do
-  idC -< (b,a)
+swapC :: Circuit (a,b) (b,a)
+swapC = circuit \(a,b) -> (b,a)
+
+circuitA :: Circuit () Int
+circuitA = Circuit (\_ -> (3, ()))
+
+f :: Circuit () Int
+f = circuit do
+  i <- circuitA
+  idC -< i
+
 
 -- myDesire :: Circuit Int Char
 -- myDesire = Circuit (\(aM2S,bS2M) -> let
@@ -74,7 +82,7 @@ tupCir1 :: Circuit (Int, Char) (Char, Int)
 tupCir1 = circuit \ input -> do
   (c,i) <- swapC @Int -< input
   i' <- myCircuit -< [i]
-  let myIdCircuit = circuit \port -> do idC -< port
+  let myIdCircuit = circuit \port -> port
   c' <- myCircuitRev -< c
   c'' <- myIdCircuit -< c'
   idC -< (i', c'')
