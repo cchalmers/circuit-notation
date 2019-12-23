@@ -69,6 +69,7 @@ data Binding exp l = Binding
 -- | A description of a circuit with internal let bindings.
 data CircuitQQ dec exp nm = CircuitQQ
   { circuitQQSlaves  :: PortDescription nm
+  , circuitQQTypes   :: [LSig GhcPs]
   , circuitQQLets    :: [dec]
   , circuitQQBinds   :: [Binding exp nm]
   , circuitQQMasters :: PortDescription nm
@@ -172,10 +173,11 @@ circuitBody slaves = \case
         L finLoc stmt ->
           throwOneError =<< err finLoc ("unhandled final stmt " <> show (Data.toConstr stmt))
 
-    (lets, bindings) <- handleStmts stmts
+    (sigs, lets, bindings) <- handleStmts stmts
 
     pure CircuitQQ
       { circuitQQSlaves = slaves
+      , circuitQQTypes = sigs
       , circuitQQLets = lets
       , circuitQQBinds = masterBindings ++ bindings
       , circuitQQMasters = masters
@@ -186,6 +188,7 @@ circuitBody slaves = \case
     let masters = bindMaster (L loc master)
     in pure CircuitQQ
       { circuitQQSlaves = slaves
+      , circuitQQTypes = []
       , circuitQQLets = []
       , circuitQQBinds = []
       , circuitQQMasters = masters
@@ -195,14 +198,16 @@ circuitBody slaves = \case
 handleStmts
   :: (p ~ GhcPs)
   => [ExprLStmt p]
-  -> CircuitM ([LHsBind p], [Binding (LHsExpr p) PortName])
+  -> CircuitM ([LSig p], [LHsBind p], [Binding (LHsExpr p) PortName])
 handleStmts stmts = do
   let (localBinds, bindings) = partitionEithers $ map (handleStmt . unL) stmts
-  binds <- sequence $ flip fmap localBinds \case
-    L _ (HsValBinds _ (ValBinds _ valBinds _sigs)) -> pure $ bagToList valBinds
+  sigBinds <- forM localBinds \case
+    L _ (HsValBinds _ (ValBinds _ valBinds sigs)) -> pure $ (sigs, bagToList valBinds)
     L loc stmt -> throwOneError =<< err loc ("unhandled statement" <> show (Data.toConstr stmt))
 
-  pure (concat binds, bindings)
+  let (sigs, binds) = unzip sigBinds
+
+  pure (concat sigs, concat binds, bindings)
 
 handleStmt
   :: (p ~ GhcPs, loc ~ SrcSpan, idL ~ GhcPs)
@@ -358,21 +363,20 @@ letE
   :: p ~ GhcPs
   => SrcSpan
   -- ^ location for top level let bindings
+  -> [LSig GhcPs]
+  -- ^ type signatures
   -> [LHsBindLR p p]
   -- ^ let bindings
   -> LHsExpr p
   -- ^ final `in` expressions
   -> LHsExpr p
-letE loc binds expr = L loc (HsLet NoExt localBinds expr)
+letE loc sigs binds expr = L loc (HsLet NoExt localBinds expr)
   where
     localBinds :: LHsLocalBindsLR GhcPs GhcPs
     localBinds = L loc $ HsValBinds NoExt valBinds
 
     valBinds :: HsValBindsLR GhcPs GhcPs
     valBinds = ValBinds NoExt hsBinds sigs
-
-    sigs :: [LSig GhcPs]
-    sigs = []
 
     hsBinds :: LHsBindsLR GhcPs GhcPs
     hsBinds = listToBag binds
@@ -473,7 +477,7 @@ mkCircuit slaves lets masters = do
       res  = createInputs slaves masters
 
       body :: LHsExpr GhcPs
-      body = letE noSrcSpan lets res
+      body = letE noSrcSpan [] lets res
 
   pure $ circuitConstructor noSrcSpan `appE` lamE [pats] body
 
