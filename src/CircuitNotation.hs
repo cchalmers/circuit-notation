@@ -106,6 +106,7 @@ data PortDescription a
   | Lazy (PortDescription a)
   | SignalExpr (LHsExpr GhcPs)
   | SignalPat (LPat GhcPs)
+  | PortType (LHsSigWcType GhcPs) (PortDescription a)
   | PortErr SrcSpan Err.MsgDoc
   deriving (Foldable, Functor, Traversable)
 
@@ -221,6 +222,7 @@ bindSlave = \case
   L _ (ParPat _ lpat) -> bindSlave lpat
   L _ (ConPatIn (L _ (GHC.Unqual occ)) (PrefixCon [lpat]))
     | OccName.occNameString occ == "Signal" -> SignalPat lpat
+  L _ (SigPat ty port) -> PortType ty (bindSlave port)
   L loc pat ->
     PortErr loc
             (Err.mkLocMessageAnn
@@ -240,6 +242,7 @@ bindMaster (L loc expr) = case expr of
   ExplicitList _ _syntaxExpr exprs -> Vec $ fmap bindMaster exprs
   HsApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig
     | OccName.occNameString occ == "Signal" -> SignalExpr sig
+  ExprWithTySig ty expr' -> PortType ty (bindMaster expr')
   _ -> PortErr loc
     (Err.mkLocMessageAnn
       Nothing
@@ -296,6 +299,7 @@ bindWithSuffix dflags suffix = \case
   Lazy _ -> error "bindWithSuffix Lazy not handled" -- tildeP $ bindWithSuffix suffix p
   SignalExpr (L l _) -> L l (WildPat NoExt)
   SignalPat lpat -> lpat
+  PortType _ p -> bindWithSuffix dflags suffix p
 
 bindOutputs
   :: p ~ GhcPs
@@ -323,6 +327,7 @@ expWithSuffix suffix = \case
   PortErr _ _ -> error "expWithSuffix PortErr!"
   SignalExpr lexpr -> lexpr
   SignalPat (L l _) -> tupE l []
+  PortType _ p -> expWithSuffix suffix p
 
 createInputs
   :: p ~ GhcPs
