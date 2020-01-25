@@ -613,14 +613,15 @@ circuitQQExpM dflags c@CircuitQQ {..} = do
         tupE noSrcSpan $ replicate numBinds (runCircuitFun noSrcSpan)
       runCircuitBinds = tupP $ map (\i -> varP noSrcSpan ("run" <> show i)) [0 .. numBinds-1]
 
-  pure $ letE noSrcSpan [noLoc inferenceHelperTy]
-    [ noLoc $ patBind (varP noSrcSpan "cir") cir
-    , noLoc $ patBind (varP noSrcSpan "inferenceHelper")
+  pure $ letE noSrcSpan (if numBinds == 0 then [] else [noLoc inferenceHelperTy])
+    ( [ noLoc $ patBind (varP noSrcSpan "cir") cir
+    ] <> if numBinds == 0 then [] else [
+      noLoc $ patBind (varP noSrcSpan "inferenceHelper")
                       (constVar noSrcSpan `appE` runCircuitExprs)
     , noLoc $ patBind runCircuitBinds
                  ((varE noSrcSpan (var "inferenceHelper")) `appE`
                      (varE noSrcSpan (var "cir")))
-    ]
+    ])
     (varE noSrcSpan (var "cir"))
 
 -- patBind :: p ~ GhcPs => LPat p -> LHsExpr p -> HsBindLR p p
