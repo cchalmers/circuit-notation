@@ -9,9 +9,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeFamilies #-}
-module CircuitNotation (plugin, showC) where
 
--- import Debug.Trace
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+
+module CircuitNotation (plugin, showC, trace) where
+
+import Debug.Trace
 
 import System.IO.Unsafe
 
@@ -119,6 +123,27 @@ vecP pats = noLoc $ ListPat NoExt pats
 
 varP :: p ~ GhcPs => SrcSpan -> String -> LPat p
 varP loc nm = L loc $ VarPat NoExt (L loc $ var nm)
+
+-- Types ---------------------------------------------------------------
+
+tupT :: p ~ GhcPs => [LHsType p] -> LHsType p
+tupT tys = noLoc $ HsTupleTy NoExt HsBoxedTuple tys
+
+vecT :: p ~ GhcPs => [LHsType p] -> LHsType p
+vecT _tys = error "can't do a vec type yet" -- noLoc $ HsTupleTy NoExt HsBoxedTuple tys
+
+portTypeSig :: p ~ GhcPs => GHC.DynFlags -> PortDescription PortName -> LHsType p
+portTypeSig dflags = \case
+  Tuple ps -> tupT $ fmap (portTypeSig dflags) ps
+  Vec ps   -> vecT $ fmap (portTypeSig dflags) ps
+  Ref (PortName loc fs) -> varT loc (GHC.unpackFS fs <> "Ty")
+  PortErr loc msgdoc -> unsafePerformIO . throwOneError $
+    Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "portTypeSig") msgdoc
+  Lazy p -> portTypeSig dflags p
+  -- TODO make the 'a' unique
+  SignalExpr (L l _) -> L l $ HsAppTy NoExt (conT l "Signal") (varT l "a")
+  SignalPat (L l _) -> L l $ HsAppTy NoExt (conT l "Signal") (varT l "a")
+  PortType _ p -> portTypeSig dflags p
 
 -- Parsing -------------------------------------------------------------
 
@@ -387,6 +412,9 @@ circuitConstructor loc = varE loc (con "Circuit")
 runCircuitFun :: p ~ GhcPs => SrcSpan -> LHsExpr p
 runCircuitFun loc = varE loc (var "runCircuit")
 
+constVar :: p ~ GhcPs => SrcSpan -> LHsExpr p
+constVar loc = varE loc (var "const")
+
 appE :: p ~ GhcPs => LHsExpr p -> LHsExpr p -> LHsExpr p
 appE fun arg = L noSrcSpan $ HsApp NoExt fun arg
 
@@ -395,6 +423,12 @@ varE loc rdr = L loc (HsVar NoExt (L loc rdr))
 
 var :: String -> GHC.RdrName
 var = GHC.Unqual . OccName.mkVarOcc
+
+tyVar :: String -> GHC.RdrName
+tyVar = GHC.Unqual . OccName.mkTyVarOcc
+
+tyCon :: String -> GHC.RdrName
+tyCon = GHC.Unqual . OccName.mkTcOcc
 
 con :: String -> GHC.RdrName
 con = GHC.Unqual . OccName.mkDataOcc
@@ -416,7 +450,7 @@ pluginImpl :: GHC.ModSummary -> GHC.HsParsedModule -> GHC.Hsc GHC.HsParsedModule
 pluginImpl _modSummary m = do
     debug "hello"
     dflags <- GHC.getDynFlags
-    debug $ GHC.showPpr dflags (GHC.hpm_module m )
+    debug $ GHC.showPpr dflags (GHC.hpm_module m)
     hpm_module' <- transform (GHC.hpm_module m)
     let module' = m { GHC.hpm_module = hpm_module' }
     return module'
@@ -430,8 +464,8 @@ unL (L _ a) = a
 
 deepShowD :: Data.Data a => a -> String
 deepShowD a = show (Data.toConstr a) <>
-  " (" <> (unwords . fst) (SYB.gmapM (\x -> ([show $ Data.toConstr x], x)) a) <> ")"
-  -- " (" <> (unwords . fst) (SYB.gmapM (\x -> ([deepShowD x], x)) a) <> ")"
+  -- " (" <> (unwords . fst) (SYB.gmapM (\x -> ([show $ Data.toConstr x], x)) a) <> ")"
+  " (" <> (unwords . fst) (SYB.gmapM (\x -> ([deepShowD x], x)) a) <> ")"
 
 
 bodyBinding
@@ -481,6 +515,33 @@ mkCircuit slaves lets masters = do
 
   pure $ circuitConstructor noSrcSpan `appE` lamE [pats] body
 
+varT :: SrcSpan -> String -> LHsType GhcPs
+varT loc nm = L loc (HsTyVar NoExt NotPromoted (L loc (tyVar nm)))
+
+conT :: SrcSpan -> String -> LHsType GhcPs
+conT loc nm = L loc (HsTyVar NoExt NotPromoted (L loc (tyCon nm)))
+
+-- a b -> (Circuit a b -> CircuitT a b)
+mkRunCircuitTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
+mkRunCircuitTy a b =
+  noLoc $ HsFunTy noExt
+  (noLoc $
+    HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan "Circuit") a) b
+    )
+  ( noLoc $
+    HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan "CircuitT") a) b
+    )
+
+mkInferenceHelperTy :: p ~ GhcPs => LHsType p
+mkInferenceHelperTy =
+  noLoc $ HsFunTy noExt
+  (noLoc $
+    HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan "Circuit") a) b
+    )
+  (mkRunCircuitTy a b)
+  where a = (varT noSrcSpan "a")
+        b = (varT noSrcSpan "b")
+
 circuitQQExpM
   :: p ~ GhcPs
   => CircuitQQ (LHsBind p) (LHsExpr p) PortName
@@ -492,7 +553,37 @@ circuitQQExpM c@CircuitQQ {..} = do
         [ circuitQQLets
         , fmap (noLoc . decFromBinding dynflags) circuitQQBinds
         ]
-  mkCircuit circuitQQSlaves decs circuitQQMasters
+  cir <- mkCircuit circuitQQSlaves decs circuitQQMasters
+
+  let inferenceSig :: LHsSigType GhcPs
+      -- inferenceSig = HsIB NoExt (noLoc (varT NoExt NotPromoted (noLoc (tyVar "a"))))
+      -- inferenceSig = HsIB NoExt (mkRunCircuitTy (noLoc $ varT "a") (noLoc $ varT "b"))
+      inferenceSig = HsIB NoExt mkInferenceHelperTy
+      inferenceHelperTy =
+        TypeSig NoExt
+          [noLoc (var "inferenceHelper")]
+          (HsWC NoExt inferenceSig)
+          -- ((HsWC NoExt (noLoc (HsIB NoExt (noLoc (HsTyVar undefined undefined undefined))))))
+
+  pure $ letE noSrcSpan [noLoc inferenceHelperTy]
+    [ noLoc $ patBind (varP noSrcSpan "cir") cir
+    , noLoc $ patBind (varP noSrcSpan "inferenceHelper")
+                      (constVar noSrcSpan `appE` runCircuitFun noSrcSpan)
+    , noLoc $ patBind (varP noSrcSpan "run1") ((varE noSrcSpan (var "inferenceHelper")) `appE` (varE noSrcSpan (var "cir")))
+    ]
+    (varE noSrcSpan (var "cir"))
+
+-- patBind :: p ~ GhcPs => LPat p -> LHsExpr p -> HsBindLR p p
+
+-- letE
+--   :: p ~ GhcPs
+--   => SrcSpan
+--   -- ^ location for top level let bindings
+--   -> [LHsBindLR p p]
+--   -- ^ let bindings
+--   -> LHsExpr p
+--   -- ^ final `in` expressions
+--   -> LHsExpr p
 
 lamE :: p ~ GhcPs => [LPat p] -> LHsExpr p -> LHsExpr p
 lamE pats expr = noLoc $ HsLam NoExt mg
@@ -521,11 +612,39 @@ isDollar = \case
   HsVar _ (L _ v) -> v == GHC.mkVarUnqual "$"
   _               -> False
 
+-- deriving instance SYB.Data OccName.NameSpace
+
+-- grr :: MonadIO m => OccName.NameSpace -> m ()
+-- grr nm
+--   | nm == OccName.tcName = liftIO $ putStrLn "tcName"
+--   | nm == OccName.clsName = liftIO $ putStrLn "clsName"
+--   | nm == OccName.tcClsName = liftIO $ putStrLn "tcClsName"
+--   | nm == OccName.dataName = liftIO $ putStrLn "dataName"
+--   | nm == OccName.varName = liftIO $ putStrLn "varName"
+--   | nm == OccName.tvName = liftIO $ putStrLn "tvName"
+--   | otherwise = liftIO $ putStrLn "I dunno"
+
 transform
     :: GHC.Located (HsModule GhcPs)
     -> GHC.Hsc (GHC.Located (HsModule GhcPs))
 transform = SYB.everywhereM (SYB.mkM transform') where
   transform' :: LHsExpr GhcPs -> GHC.Hsc (LHsExpr GhcPs)
+  -- transform' e@(L _ (HsLet _xlet (L _ (HsValBinds _ (ValBinds _ _ sigs))) _lappB)) =
+--  -- --                debug $ show i ++ " ==> " ++ SYB.gshow stmt
+    -- trace (show (SYB.gshow <$> sigs)) pure e
+    -- trace (show (( \ (TypeSig _ ids ty) -> show (deepShowD <$> ids) <> " " <> deepShowD ty) . unL <$> sigs)) pure e
+    -- case sigs of
+    --   [L _ (TypeSig _ [L _ x] y)] -> do
+    --     dflags <- GHC.getDynFlags
+    --     let pp :: GHC.Outputable a => a -> String
+    --         pp = GHC.showPpr dflags
+    --     -- case y of
+    --     --   HsWC _ (HsIB _ (L _ (HsTyVar _ _ (L _ (GHC.Unqual occ))))) -> do
+    --     --     grr (OccName.occNameSpace occ)
+    --     --   _ -> pure ()
+    --     trace (pp x) trace (SYB.gshow y) pure e
+        -- error "fin"
+      -- _ -> pure e
   transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
     | isCircuitVar circuitVar = do
       debug "HsApp!"
