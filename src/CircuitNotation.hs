@@ -13,6 +13,8 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
+
 module CircuitNotation (plugin, showC, trace) where
 
 import Debug.Trace
@@ -371,11 +373,14 @@ createInputs slaves masters = tupE noSrcSpan [m2s, s2m]
   m2s = expWithSuffix ":M2S" masters
   s2m = expWithSuffix ":S2M" slaves
 
-decFromBinding :: p ~ GhcPs => GHC.DynFlags -> Binding (LHsExpr p) PortName -> HsBind p
-decFromBinding dflags Binding {..} = do
+imap :: (Int -> a -> b) -> [a] -> [b]
+imap f as = map (\(i,a) -> f i a) (zip [0..] as)
+
+decFromBinding :: p ~ GhcPs => GHC.DynFlags -> Int -> Binding (LHsExpr p) PortName -> HsBind p
+decFromBinding dflags i Binding {..} = do
   let bindPat  = bindOutputs dflags bOut bIn
       inputExp = createInputs bIn bOut
-      bod = runCircuitFun noSrcSpan `appE` bCircuit `appE` inputExp
+      bod = varE noSrcSpan (var $ "run" <> show i) `appE` bCircuit `appE` inputExp
    in patBind bindPat bod
 
 patBind :: p ~ GhcPs => LPat p -> LHsExpr p -> HsBindLR p p
@@ -532,44 +537,89 @@ mkRunCircuitTy a b =
     HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan "CircuitT") a) b
     )
 
-mkInferenceHelperTy :: p ~ GhcPs => LHsType p
-mkInferenceHelperTy =
+-- portTypeSig :: p ~ GhcPs => GHC.DynFlags -> PortDescription PortName -> LHsType p
+
+    -- let so_filename = python_interpreter.get_library_name(&module_name);
+-- data CircuitQQ dec exp nm = CircuitQQ
+  -- { circuitQQSlaves  :: PortDescription nm
+  -- , circuitQQTypes   :: [LSig GhcPs]
+  -- , circuitQQLets    :: [dec]
+  -- , circuitQQBinds   :: [Binding exp nm]
+  -- , circuitQQMasters :: PortDescription nm
+  -- } deriving (Functor)
+  -- -> CircuitM (CircuitQQ (LHsBind p) (LHsExpr p) PortName)
+
+
+-- | Creates a (tuple of) run circuit types the used for the bindings.
+bindRunCircuitTypes
+  :: p ~ GhcPs
+  => GHC.DynFlags
+  -> [Binding (LHsExpr p) PortName]
+  -> LHsType p
+bindRunCircuitTypes dflags binds = tupT (map mkTy binds)
+  where
+    mkTy bind = mkRunCircuitTy a b
+      where
+        a = portTypeSig dflags (bOut bind)
+        b = portTypeSig dflags (bIn bind)
+
+  -- , bOut     :: PortDescription l
+  -- , bIn      :: PortDescription l
+-- tupT :: p ~ GhcPs => [LHsType p] -> LHsType p
+
+mkInferenceHelperTy
+  :: p ~ GhcPs
+  => GHC.DynFlags
+  -- -> PortDescription PortName
+  -- -> PortDescription PortName
+  -> CircuitQQ (LHsBind p) (LHsExpr p) PortName
+  -> LHsType p
+mkInferenceHelperTy dflags CircuitQQ {..} =
   noLoc $ HsFunTy noExt
-  (noLoc $
-    HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan "Circuit") a) b
-    )
-  (mkRunCircuitTy a b)
-  where a = (varT noSrcSpan "a")
-        b = (varT noSrcSpan "b")
+    (noLoc $ HsAppTy NoExt topLevelCircuitTy b)
+    -- (mkRunCircuitTy a b)
+    (bindRunCircuitTypes dflags circuitQQBinds)
+  where
+    a = portTypeSig dflags circuitQQSlaves -- (varT noSrcSpan "aa")
+    b = portTypeSig dflags circuitQQMasters -- (varT noSrcSpan "b")
+    topLevelCircuitTy = noLoc $ HsAppTy NoExt (conT noSrcSpan "Circuit") a
 
 circuitQQExpM
   :: p ~ GhcPs
-  => CircuitQQ (LHsBind p) (LHsExpr p) PortName
+  => GHC.DynFlags
+  -> CircuitQQ (LHsBind p) (LHsExpr p) PortName
   -> CircuitM (LHsExpr p)
-circuitQQExpM c@CircuitQQ {..} = do
+circuitQQExpM dflags c@CircuitQQ {..} = do
   checkCircuit c
   dynflags <- GHC.getDynFlags
   let decs = concat
         [ circuitQQLets
-        , fmap (noLoc . decFromBinding dynflags) circuitQQBinds
+        , imap (\i -> noLoc . decFromBinding dynflags i) circuitQQBinds
         ]
   cir <- mkCircuit circuitQQSlaves decs circuitQQMasters
 
   let inferenceSig :: LHsSigType GhcPs
       -- inferenceSig = HsIB NoExt (noLoc (varT NoExt NotPromoted (noLoc (tyVar "a"))))
       -- inferenceSig = HsIB NoExt (mkRunCircuitTy (noLoc $ varT "a") (noLoc $ varT "b"))
-      inferenceSig = HsIB NoExt mkInferenceHelperTy
+      inferenceSig = HsIB NoExt (mkInferenceHelperTy dflags c)
       inferenceHelperTy =
         TypeSig NoExt
           [noLoc (var "inferenceHelper")]
           (HsWC NoExt inferenceSig)
           -- ((HsWC NoExt (noLoc (HsIB NoExt (noLoc (HsTyVar undefined undefined undefined))))))
 
+  let numBinds = length circuitQQBinds
+      runCircuitExprs =
+        tupE noSrcSpan $ replicate numBinds (runCircuitFun noSrcSpan)
+      runCircuitBinds = tupP $ map (\i -> varP noSrcSpan ("run" <> show i)) [0 .. numBinds-1]
+
   pure $ letE noSrcSpan [noLoc inferenceHelperTy]
     [ noLoc $ patBind (varP noSrcSpan "cir") cir
     , noLoc $ patBind (varP noSrcSpan "inferenceHelper")
-                      (constVar noSrcSpan `appE` runCircuitFun noSrcSpan)
-    , noLoc $ patBind (varP noSrcSpan "run1") ((varE noSrcSpan (var "inferenceHelper")) `appE` (varE noSrcSpan (var "cir")))
+                      (constVar noSrcSpan `appE` runCircuitExprs)
+    , noLoc $ patBind runCircuitBinds
+                 ((varE noSrcSpan (var "inferenceHelper")) `appE`
+                     (varE noSrcSpan (var "cir")))
     ]
     (varE noSrcSpan (var "cir"))
 
@@ -662,7 +712,7 @@ transformCircuit e = do
   let pp :: GHC.Outputable a => a -> String
       pp = GHC.showPpr dflags
   cqq <- parseCircuit e
-  expr <- circuitQQExpM cqq
+  expr <- circuitQQExpM dflags cqq
   debug $ pp expr
   pure expr
 
