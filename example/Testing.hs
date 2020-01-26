@@ -46,7 +46,7 @@ no c =
   in cir
 
 swapIC :: Circuit Int Char -> Circuit (Int, Int) (Char, Char)
-swapIC c = circuit $ \(a :: Int ,b) -> do
+swapIC c = circuit $ \((a :: Int ,b) :: (Int, Int)) -> do
   a' <- c -< a :: int
   b' <- c -< b
   idC -< (b',a')

@@ -608,24 +608,8 @@ getTypeAnnots = execWriter . L.traverseOf_ L.cosmos addTypes
       PortType ty p -> tell [(ty, p)]
       _             -> pure ()
 
-
-
--- transform = SYB.everywhereM (SYB.mkM transform') where
-
--- data PortDescription a
---   = Tuple [PortDescription a]
---   | Vec [PortDescription a]
---   | Ref a
---   | Lazy (PortDescription a)
---   | SignalExpr (LHsExpr GhcPs)
---   | SignalPat (LPat GhcPs)
---   | PortType (LHsSigWcType GhcPs) (PortDescription a)
---   | PortErr SrcSpan Err.MsgDoc
---   deriving (Foldable, Functor, Traversable)
-
 tyEq :: p ~ GhcPs => SrcSpan -> LHsType p -> LHsType p -> LHsType p
 tyEq l a b = L l $ HsOpTy NoExt a (noLoc eqTyCon_RDR) b
-
 -- eqTyCon is a special name that has to be exactly correct for ghc to recognise it. In 8.6 this
 -- lives in PrelNames and is called eqTyCon_RDR, in laster ghcs it's from TysWiredIn.
 
@@ -672,18 +656,6 @@ circuitQQExpM dflags c@CircuitQQ {..} = do
                      (varE noSrcSpan (var "cir")))
     ])
     (varE noSrcSpan (var "cir"))
-
--- patBind :: p ~ GhcPs => LPat p -> LHsExpr p -> HsBindLR p p
-
--- letE
---   :: p ~ GhcPs
---   => SrcSpan
---   -- ^ location for top level let bindings
---   -> [LHsBindLR p p]
---   -- ^ let bindings
---   -> LHsExpr p
---   -- ^ final `in` expressions
---   -> LHsExpr p
 
 lamE :: p ~ GhcPs => [LPat p] -> LHsExpr p -> LHsExpr p
 lamE pats expr = noLoc $ HsLam NoExt mg
