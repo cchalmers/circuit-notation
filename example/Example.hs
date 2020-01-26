@@ -1,27 +1,28 @@
---{-# LANGUAGE OverloadedStrings #-}
---{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE Arrows  #-}
-{-# LANGUAGE TypeApplications  #-}
+{-
+ ██████╗██╗██████╗  ██████╗██╗   ██╗██╗████████╗███████╗
+██╔════╝██║██╔══██╗██╔════╝██║   ██║██║╚══██╔══╝██╔════╝
+██║     ██║██████╔╝██║     ██║   ██║██║   ██║   ███████╗
+██║     ██║██╔══██╗██║     ██║   ██║██║   ██║   ╚════██║
+╚██████╗██║██║  ██║╚██████╗╚██████╔╝██║   ██║   ███████║
+ ╚═════╝╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝   ╚═╝   ╚══════╝
+  (C) 2020, Christopher Chalmers
 
-{-# LANGUAGE ScopedTypeVariables  #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveFunctor #-}
+This file contains examples of using the Circuit Notation.
+-}
+
+{-# LANGUAGE Arrows              #-}
+{-# LANGUAGE BlockArguments      #-}
+{-# LANGUAGE DeriveFunctor       #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies        #-}
+
+{-# OPTIONS -fplugin=CircuitNotation #-}
+
 ---- | Hack idiom-brackets using Source Plugin.
 ----
 ---- As nobody (?) writes their lists as `([1, 2, 3])`,
 ---- we can steal that syntax!
 ---- module Main (main) where
-
---import Data.String         (IsString (..))
---import Control.Applicative (some, (<|>))
---import Data.Traversable    (foldMapDefault)
---import Test.HUnit          ((@?=))
---import Text.Parsec         (parse)
---import Text.Parsec.Char    (alphaNum, char, spaces)
---import Text.Parsec.String  (Parser)
-
-{-# OPTIONS -fplugin=CircuitNotation #-}
 
 module Example where
 
@@ -37,7 +38,7 @@ type family S2M a
 
 data DF a
 data DFM2S a = DFM2S Bool a
-data DFS2M = DFS2M Bool
+newtype DFS2M = DFS2M Bool
 
 type instance M2S (DF a) = Signal (DFM2S a)
 type instance S2M (DF a) = Signal DFS2M
@@ -57,35 +58,7 @@ type instance S2M (a,b,c) = (S2M a, S2M b, S2M c)
 type instance M2S (Signal a) = Signal a
 type instance S2M (Signal a) = ()
 
--- idC :: Int
--- idC = 5
-
--- data DF d a
-
--- myCircuit :: Int
--- myCircuit = circuit \(v1 :: DF d a) (v3 :: blah) -> do
---   v1' <- total -< (v3 :: DF domain Int)
---   v2 <- total -< (v1 :: DF domain Int)
---   -- v2' <- total2 -< v2
---   -- v3 <- zipC -< (v1', v2')
---   idC -< v3
-
--- Circuit (() -> a)
-
-
--- Circuit (a -> b -> c)
--- Circuit ((a,b) -> c)
--- Circuit (a)
-
--- (><) :: Circuit (a -> b -> c) -> Circuit a -> Circuit (b -> c)
-
-data Circuit a b = Circuit {runCircuit :: (M2S a, S2M b) -> (M2S b, S2M a)}
-
--- myCircuit :: Circuit [Int] Char
--- myCircuit = undefined
-
--- myCircuitRev :: Circuit Char Int
--- myCircuitRev = undefined
+newtype Circuit a b = Circuit {runCircuit :: (M2S a, S2M b) -> (M2S b, S2M a)}
 
 idC :: Circuit a a
 idC = Circuit id
@@ -94,10 +67,10 @@ idCircuit :: Circuit a a
 idCircuit = idC
 
 swapC :: Circuit (a,b) (b,a)
-swapC = circuit \(a,b) -> (b,a)
+swapC = circuit $ \(a,b) -> (b,a)
 
 circuitA :: Circuit () (DF Int)
-circuitA = Circuit (\_ -> (pure (DFM2S True 3), ()))
+circuitA = Circuit (const (pure (DFM2S True 3), ()))
 
 circuitB :: Circuit () (Signal Int)
 circuitB = Circuit (\_ -> (pure 3, ()))
@@ -106,24 +79,23 @@ circuitC :: Circuit (Signal Int) (DF Int)
 circuitC = Circuit (\(as,_) -> (DFM2S True <$> as, ()))
 
 noLambda :: Circuit () (DF Int)
-noLambda = circuit do
+noLambda = circuit $ do
   i <- circuitA
   idC -< i
 
 sigExpr :: Signal Int -> Circuit () (DF Int)
-sigExpr sig = circuit do
+sigExpr sig = circuit $ do
   i <- circuitC -< Signal sig
   idC -< i
 
 -- sigPat :: (( Signal Int -> Signal Int ))
 sigPat :: Circuit (Signal Int) (Signal Int)
-sigPat = circuit \(Signal a) -> do
+sigPat = circuit $ \(Signal a) -> do
   i <- (idC :: Circuit (Signal Int) (Signal Int)) -< Signal a
   idC -< i
 
 swapTest :: forall a b. Circuit (a,b) (b,a)
-swapTest = circuit \(a,b) -> do
-  (idCircuit :: Circuit (b,a) (b,a)) -< (b,a)
+swapTest = circuit $ \(a,b) -> (idCircuit :: Circuit (b, a) (b, a)) -< (b, a)
 
 -- myDesire :: Circuit Int Char
 -- myDesire = Circuit (\(aM2S,bS2M) -> let

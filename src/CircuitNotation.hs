@@ -1,64 +1,67 @@
-{-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE GeneralisedNewtypeDeriving #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE DeriveFoldable #-}
-{-# LANGUAGE DeriveTraversable #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE TypeFamilies #-}
+{-
+ ██████╗██╗██████╗  ██████╗██╗   ██╗██╗████████╗███████╗
+██╔════╝██║██╔══██╗██╔════╝██║   ██║██║╚══██╔══╝██╔════╝
+██║     ██║██████╔╝██║     ██║   ██║██║   ██║   ███████╗
+██║     ██║██╔══██╗██║     ██║   ██║██║   ██║   ╚════██║
+╚██████╗██║██║  ██║╚██████╗╚██████╔╝██║   ██║   ███████║
+ ╚═════╝╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝   ╚═╝   ╚══════╝
+  (C) 2020, Christopher Chalmers
 
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE DeriveDataTypeable #-}
+Notation for describing the 'Circuit' type.
+-}
+
+{-# LANGUAGE BlockArguments             #-}
+{-# LANGUAGE DeriveFoldable             #-}
+{-# LANGUAGE DeriveFunctor              #-}
+{-# LANGUAGE DeriveTraversable          #-}
+{-# LANGUAGE GeneralisedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE ViewPatterns               #-}
 
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
 module CircuitNotation (plugin, showC, trace) where
 
-import PrelNames (eqTyCon_RDR)
-
-import qualified Control.Lens as L
-
-import Control.Monad.Writer
-
-import Debug.Trace
-
-import System.IO.Unsafe
-
-import FastString (mkFastString)
-import qualified Data.Data as Data
-import Data.Maybe (fromMaybe)
-
-import Data.Either (partitionEithers)
-
-import Bag
-
-import Data.Typeable
-import Control.Monad.IO.Class (MonadIO (..))
-
-import qualified Data.Generics as SYB
-
-import qualified ErrUtils    as Err
--- import qualified Pretty
-import qualified GhcPlugins  as GHC
-import           HsExtension (GhcPs, NoExt (..))
-import           HsSyn
+-- base
+import           Control.Exception
+import           Control.Monad.IO.Class (MonadIO (..))
+import qualified Data.Data              as Data
+import           Data.Either            (partitionEithers)
+import           Data.Maybe             (fromMaybe)
+import           Debug.Trace
+import           Data.Typeable
 import           SrcLoc
--- import           ErrUtils
-import           HscTypes (throwOneError)
-import qualified Outputable
+import           System.IO
+import           System.IO.Unsafe
 
-import Control.Exception
-
-import System.IO
+-- ghc
+import           Bag
+import qualified ErrUtils               as Err
+import           FastString             (mkFastString)
+import qualified GhcPlugins             as GHC
+import           HsExtension            (GhcPs, NoExt (..))
+import           HsSyn
+import           HscTypes               (throwOneError)
 import qualified OccName
+import qualified Outputable
+import           PrelNames              (eqTyCon_RDR)
 
-import qualified Text.Show.Pretty as SP
+-- lens
+import qualified Control.Lens           as L
 
-import Control.Monad.State
+-- mtl
+import           Control.Monad.State
+import           Control.Monad.Writer
 
+-- pretty-show
+import qualified Text.Show.Pretty       as SP
+
+-- syb
+import qualified Data.Generics          as SYB
 
 -- | The name given to a 'port', i.e. the name of something either to the left of a '<-' or to the
 -- right of a '-<'.
@@ -89,7 +92,7 @@ data CircuitQQ dec exp nm = CircuitQQ
   , circuitQQMasters :: PortDescription nm
   } deriving (Functor)
 
-data CircuitState = CircuitState
+newtype CircuitState = CircuitState
   { cErrors   :: Bag Err.ErrMsg
   }
 
@@ -109,7 +112,7 @@ runCircuitM (CircuitM m) = do
         }
   (a, s) <- runStateT m emptyCircuitState
   let errs = cErrors s
-  when (not $ isEmptyBag errs) $ liftIO . throwIO $ GHC.mkSrcErr errs
+  unless (isEmptyBag errs) $ liftIO . throwIO $ GHC.mkSrcErr errs
   pure a
 
 -- PortDescription -----------------------------------------------------
@@ -135,7 +138,7 @@ instance L.Plated (PortDescription a) where
 
 getSigTy :: p ~ GhcPs => LHsSigWcType p -> LHsType p
 getSigTy (HsWC _ (HsIB _ t)) = t
-getSigTy _ = error "getSigTy"
+getSigTy _                   = error "getSigTy"
 
 -- foldring :: (Contravariant f, Applicative f) => ((a -> f a -> f a) -> f a -> s -> f a) -> LensLike f s t a b
 -- foldring fr f = phantom . fr (\a fa -> f a *> fa) noEffect
@@ -252,8 +255,8 @@ handleStmts
   -> CircuitM ([LSig p], [LHsBind p], [Binding (LHsExpr p) PortName])
 handleStmts stmts = do
   let (localBinds, bindings) = partitionEithers $ map (handleStmt . unL) stmts
-  sigBinds <- forM localBinds \case
-    L _ (HsValBinds _ (ValBinds _ valBinds sigs)) -> pure $ (sigs, bagToList valBinds)
+  sigBinds <- forM localBinds $ \case
+    L _ (HsValBinds _ (ValBinds _ valBinds sigs)) -> pure (sigs, bagToList valBinds)
     L loc stmt -> throwOneError =<< err loc ("unhandled statement" <> show (Data.toConstr stmt))
 
   let (sigs, binds) = unzip sigBinds
@@ -268,7 +271,7 @@ handleStmt = \case
   LetStmt _xlet letBind -> Left letBind
   BodyStmt _xbody body _idr _idr' -> Right (bodyBinding Nothing body)
   BindStmt _xbody bind body _idr _idr' -> Right (bodyBinding (Just $ bindSlave bind) body)
-  _ -> error $ "Unhandled stmt"
+  _ -> error "Unhandled stmt"
 
 -- | Turn patterns to the left of a @<-@ into a PortDescription.
 bindSlave :: p ~ GhcPs => LPat p -> PortDescription PortName
@@ -329,8 +332,7 @@ finalStmt (L loc expr) = case expr of
 -- Checking ------------------------------------------------------------
 
 checkCircuit :: p ~ GhcPs => CircuitQQ (LHsBind p) (LHsExpr p) PortName -> CircuitM ()
-checkCircuit cQQ = do
-  checkMatching cQQ
+checkCircuit cQQ = checkMatching cQQ
 
 checkMatching :: p ~ GhcPs => CircuitQQ (LHsBind p) (LHsExpr p) PortName -> CircuitM ()
 checkMatching CircuitQQ {..} = do
@@ -398,7 +400,7 @@ createInputs slaves masters = tupE noSrcSpan [m2s, s2m]
   s2m = expWithSuffix ":S2M" slaves
 
 imap :: (Int -> a -> b) -> [a] -> [b]
-imap f as = map (\(i,a) -> f i a) (zip [0..] as)
+imap f = zipWith f [0 ..]
 
 decFromBinding :: p ~ GhcPs => GHC.DynFlags -> Int -> Binding (LHsExpr p) PortName -> HsBind p
 decFromBinding dflags i Binding {..} = do
@@ -606,7 +608,7 @@ mkInferenceHelperTy dflags CircuitQQ {..} =
 
 filteredBy :: (L.Indexable a p, Applicative f) => (a -> Maybe a) -> p a (f a) -> a -> f a
 filteredBy p f val = case p val of
-  Nothing -> pure val
+  Nothing      -> pure val
   Just witness -> L.indexed f witness val
 
 getTypeAnnots

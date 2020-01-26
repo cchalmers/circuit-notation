@@ -1,9 +1,22 @@
-{-# LANGUAGE ScopedTypeVariables  #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveFunctor #-}
+{-
+ ██████╗██╗██████╗  ██████╗██╗   ██╗██╗████████╗███████╗
+██╔════╝██║██╔══██╗██╔════╝██║   ██║██║╚══██╔══╝██╔════╝
+██║     ██║██████╔╝██║     ██║   ██║██║   ██║   ███████╗
+██║     ██║██╔══██╗██║     ██║   ██║██║   ██║   ╚════██║
+╚██████╗██║██║  ██║╚██████╗╚██████╔╝██║   ██║   ███████║
+ ╚═════╝╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝   ╚═╝   ╚══════╝
+  (C) 2020, Christopher Chalmers
+
+This file contains the 'Circuit' type, that the notation describes.
+-}
+
+{-# LANGUAGE DeriveFunctor       #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies        #-}
 
 module Circuit where
 
+-- | Infinite sequence of values.
 data Signal a = a :- Signal a
   deriving Functor
 
@@ -14,12 +27,13 @@ instance Applicative Signal where
 type family M2S a
 type family S2M a
 
+-- | The identity circuit.
 idC :: Circuit a a
 idC = Circuit id
 
 data DF a
 data DFM2S a = DFM2S Bool a
-data DFS2M = DFS2M Bool
+newtype DFS2M = DFS2M Bool
 
 type instance M2S (DF a) = Signal (DFM2S a)
 type instance S2M (DF a) = Signal DFS2M
@@ -39,27 +53,6 @@ type instance S2M (a,b,c) = (S2M a, S2M b, S2M c)
 type instance M2S (Signal a) = Signal a
 type instance S2M (Signal a) = ()
 
--- idC :: Int
--- idC = 5
-
--- data DF d a
-
--- myCircuit :: Int
--- myCircuit = circuit \(v1 :: DF d a) (v3 :: blah) -> do
---   v1' <- total -< (v3 :: DF domain Int)
---   v2 <- total -< (v1 :: DF domain Int)
---   -- v2' <- total2 -< v2
---   -- v3 <- zipC -< (v1', v2')
---   idC -< v3
-
--- Circuit (() -> a)
-
-
--- Circuit (a -> b -> c)
--- Circuit ((a,b) -> c)
--- Circuit (a)
-
--- (><) :: Circuit (a -> b -> c) -> Circuit a -> Circuit (b -> c)
-
-data Circuit a b = Circuit {runCircuit :: (M2S a, S2M b) -> (M2S b, S2M a)}
+-- | Circuit type.
+newtype Circuit a b = Circuit {runCircuit :: (M2S a, S2M b) -> (M2S b, S2M a)}
 type CircuitT a b = (M2S a, S2M b) -> (M2S b, S2M a)

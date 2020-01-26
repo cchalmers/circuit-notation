@@ -1,0 +1,27 @@
+# Haskell
+dist
+dist-*
+cabal-dev
+*.exe
+*.o
+*.hi
+*.chi
+*.chs.h
+*.dyn_o
+*.dyn_hi
+.hpc
+.hsenv
+.cabal-sandbox/
+cabal.sandbox.config
+.ghc.environment.*
+*.prof
+*.aux
+*.hp
+*.swp
+*.eventlog
+.stack-work/
+cabal.project.local
+**/.shake
+# nix-build output
+result
+result-*
