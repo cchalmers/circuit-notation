@@ -661,7 +661,7 @@ circuitQQExpM dflags c@CircuitQQ {..} = do
       -- inferenceSig = HsIB NoExt (mkRunCircuitTy (noLoc $ varT "a") (noLoc $ varT "b"))
       inferencePlainSig = mkInferenceHelperTy dflags c
       inferenceSig = HsIB NoExt (noLoc $ HsQualTy NoExt (noLoc context) inferencePlainSig)
-      allTypes = getTypeAnnots circuitQQSlaves
+      allTypes = getTypeAnnots circuitQQSlaves <> getTypeAnnots circuitQQMasters
       context = map (\(ty, p) -> tyEq noSrcSpan (portTypeSig dflags p) (getSigTy ty)) allTypes
       inferenceHelperTy =
         TypeSig NoExt
