@@ -1,6 +1,7 @@
 {-# LANGUAGE Arrows  #-}
 {-# LANGUAGE BlockArguments  #-}
 {-# LANGUAGE GADTs  #-}
+{-# LANGUAGE NoMonomorphismRestriction  #-}
 
 -- {-# LANGUAGE ScopedTypeVariables  #-}
 
