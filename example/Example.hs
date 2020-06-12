@@ -18,6 +18,7 @@ This file contains examples of using the Circuit Notation.
 
 {-# OPTIONS -fplugin=CircuitNotation #-}
 
+
 ---- | Hack idiom-brackets using Source Plugin.
 ----
 ---- As nobody (?) writes their lists as `([1, 2, 3])`,
@@ -26,42 +27,7 @@ This file contains examples of using the Circuit Notation.
 
 module Example where
 
-data Signal a = a :- Signal a
-  deriving Functor
-
-instance Applicative Signal where
-  pure a = a :- pure a
-  (f :- fs) <*> (a :- as) = f a :- (fs <*> as)
-
-type family M2S a
-type family S2M a
-
-data DF a
-data DFM2S a = DFM2S Bool a
-newtype DFS2M = DFS2M Bool
-
-type instance M2S (DF a) = Signal (DFM2S a)
-type instance S2M (DF a) = Signal DFS2M
-
-type instance M2S [a] = [M2S a]
-type instance S2M [a] = [S2M a]
-
-type instance M2S () = ()
-type instance S2M () = ()
-
-type instance M2S (a,b) = (M2S a, M2S b)
-type instance S2M (a,b) = (S2M a, S2M b)
-
-type instance M2S (a,b,c) = (M2S a, M2S b, M2S c)
-type instance S2M (a,b,c) = (S2M a, S2M b, S2M c)
-
-type instance M2S (Signal a) = Signal a
-type instance S2M (Signal a) = ()
-
-newtype Circuit a b = Circuit {runCircuit :: (M2S a, S2M b) -> (M2S b, S2M a)}
-
-idC :: Circuit a a
-idC = Circuit id
+import Circuit
 
 idCircuit :: Circuit a a
 idCircuit = idC
@@ -95,7 +61,8 @@ sigPat = circuit $ \(Signal a) -> do
   idC -< i
 
 swapTest :: forall a b. Circuit (a,b) (b,a)
-swapTest = circuit $ \(a,b) -> (idCircuit :: Circuit (b, a) (b, a)) -< (b, a)
+-- swapTest = circuit $ \(a,b) -> (idCircuit :: Circuit (b, a) (b, a)) -< (b, a)
+swapTest = circuit $ \(a,b) -> do idC -< (b, a)
 
 -- myDesire :: Circuit Int Char
 -- myDesire = Circuit (\(aM2S,bS2M) -> let

@@ -302,6 +302,9 @@ bindMaster (L loc expr) = case expr of
   HsApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig
     | OccName.occNameString occ == "Signal" -> SignalExpr sig
   ExprWithTySig ty expr' -> PortType ty (bindMaster expr')
+
+  -- OpApp _xapp (L _ circuitVar) (L _ infixVar) appR -> k
+
   _ -> PortErr loc
     (Err.mkLocMessageAnn
       Nothing
@@ -488,7 +491,6 @@ pluginImpl _modSummary m = do
 
 debug :: MonadIO m => String -> m ()
 debug = liftIO . hPutStrLn stderr
--- debug _ = pure ()
 
 unL :: Located a -> a
 unL (L _ a) = a
@@ -684,8 +686,6 @@ isDollar = \case
   HsVar _ (L _ v) -> v == GHC.mkVarUnqual "$"
   _               -> False
 
--- deriving instance SYB.Data OccName.NameSpace
-
 grr :: MonadIO m => OccName.NameSpace -> m ()
 grr nm
   | nm == OccName.tcName = liftIO $ putStrLn "tcName"
@@ -734,7 +734,6 @@ transform = SYB.everywhereM (SYB.mkM transform') where
 
   transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
     | isCircuitVar circuitVar && isDollar infixVar = do
-      traceM "BY STUFF"
       c <- runCircuitM $ transformCircuit appR
       dflags <- GHC.getDynFlags
       let pp :: GHC.Outputable a => a -> String
