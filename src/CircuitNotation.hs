@@ -79,6 +79,13 @@ pluginImpl _modSummary m = do
     let module' = m { GHC.hpm_module = hpm_module' }
     return module'
 
+-- Names ---------------------------------------------------------------
+
+constructorName, circuitTypeName, runCircuitName :: String
+constructorName = "Circuit"
+circuitTypeName = "CircuitT"
+runCircuitName = "runCircuit"
+
 -- Utils ---------------------------------------------------------------
 
 isCircuitVar :: p ~ GhcPs => HsExpr p -> Bool
@@ -475,10 +482,10 @@ letE loc sigs binds expr = L loc (HsLet NoExt localBinds expr)
     hsBinds = listToBag binds
 
 circuitConstructor :: p ~ GhcPs => SrcSpan -> LHsExpr p
-circuitConstructor loc = varE loc (con "Circuit")
+circuitConstructor loc = varE loc (con constructorName)
 
 runCircuitFun :: p ~ GhcPs => SrcSpan -> LHsExpr p
-runCircuitFun loc = varE loc (var "runCircuit")
+runCircuitFun loc = varE loc (var runCircuitName)
 
 constVar :: p ~ GhcPs => SrcSpan -> LHsExpr p
 constVar loc = varE loc (var "const")
@@ -583,10 +590,10 @@ mkRunCircuitTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
 mkRunCircuitTy a b =
   noLoc $ HsFunTy noExt
   (noLoc $
-    HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan "Circuit") a) b
+    HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan constructorName) a) b
     )
   ( noLoc $
-    HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan "CircuitT") a) b
+    HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan circuitTypeName) a) b
     )
 
 -- | Creates a (tuple of) run circuit types the used for the bindings.
@@ -617,7 +624,7 @@ mkInferenceHelperTy dflags CircuitQQ {..} =
   where
     a = portTypeSig dflags circuitQQSlaves -- (varT noSrcSpan "aa")
     b = portTypeSig dflags circuitQQMasters -- (varT noSrcSpan "b")
-    topLevelCircuitTy = noLoc $ HsAppTy NoExt (conT noSrcSpan "Circuit") a
+    topLevelCircuitTy = noLoc $ HsAppTy NoExt (conT noSrcSpan constructorName) a
 
 filteredBy :: (L.Indexable a p, Applicative f) => (a -> Maybe a) -> p a (f a) -> a -> f a
 filteredBy p f val = case p val of
