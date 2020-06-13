@@ -50,9 +50,9 @@ noLambda = circuit $ do
   idC -< i
 
 sigExpr :: Signal Int -> Circuit () (DF Int)
-sigExpr sig = circuit $ do
+sigExpr sig = circuit (do
   i <- circuitC -< Signal sig
-  idC -< i
+  idC -< i)
 
 -- sigPat :: (( Signal Int -> Signal Int ))
 sigPat :: Circuit (Signal Int) (Signal Int)
