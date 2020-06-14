@@ -14,9 +14,14 @@ This file contains the 'Circuit' type, that the notation describes.
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
 
+{-# LANGUAGE DataKinds        #-}
+{-# LANGUAGE TypeOperators        #-}
+{-# LANGUAGE GADTs        #-}
+
 module Circuit where
 
 import Data.Default
+import GHC.TypeLits
 
 -- | Infinite sequence of values.
 data Signal a = a :- Signal a
@@ -47,6 +52,16 @@ instance Default DFS2M where
 
 type instance M2S (DF a) = Signal (DFM2S a)
 type instance S2M (DF a) = Signal DFS2M
+
+data Vec n a where
+  Nil :: Vec 0 a
+  Cons :: a -> Vec n a -> Vec (n + 1) a
+
+myVec :: Vec 2 Int
+myVec = Cons 1 (Cons 2 Nil)
+
+type instance M2S (Vec n a) = Vec n (M2S a)
+type instance S2M (Vec n a) = Vec n (S2M a)
 
 type instance M2S [a] = [M2S a]
 type instance S2M [a] = [S2M a]
