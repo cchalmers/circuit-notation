@@ -16,9 +16,14 @@ This file contains the 'Circuit' type, that the notation describes.
 
 module Circuit where
 
+import Data.Default
+
 -- | Infinite sequence of values.
 data Signal a = a :- Signal a
   deriving Functor
+
+instance Default a => Default (Signal a) where
+  def = pure def
 
 instance Applicative Signal where
   pure a = a :- pure a
@@ -34,6 +39,11 @@ idC = Circuit id
 data DF a
 data DFM2S a = DFM2S Bool a
 newtype DFS2M = DFS2M Bool
+
+instance Default (DFM2S a) where
+  def = DFM2S False (error "error default")
+instance Default DFS2M where
+  def = DFS2M True
 
 type instance M2S (DF a) = Signal (DFM2S a)
 type instance S2M (DF a) = Signal DFS2M

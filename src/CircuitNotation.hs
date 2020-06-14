@@ -39,7 +39,7 @@ import           System.IO.Unsafe
 -- ghc
 import           Bag
 import qualified ErrUtils               as Err
-import           FastString             (mkFastString)
+import           FastString             (mkFastString, unpackFS)
 import qualified GhcPlugins             as GHC
 import           HscTypes               (throwOneError)
 import           HsExtension            (GhcPs, NoExt (..))
@@ -435,6 +435,31 @@ bindMaster (L loc expr) = case expr of
       (Outputable.text $ "Unhandled expression " <> show (Data.toConstr expr))
       )
 
+-- | Create a binding expression
+bodyBinding
+  :: (p ~ GhcPs, loc ~ SrcSpan)
+  => Maybe (PortDescription PortName)
+  -- ^ the bound variable, this can be Nothing if there is no @<-@ (a circuit with no slaves)
+  -> GenLocated loc (HsExpr p)
+  -- ^ the statement with an optional @-<@
+  -> Binding (LHsExpr p) PortName
+bodyBinding mInput lexpr@(L _loc expr) =
+  case expr of
+    HsArrApp _xhsArrApp circuit port HsFirstOrderApp True ->
+      Binding
+        { bCircuit = circuit
+        , bOut     = bindMaster port
+        , bIn      = fromMaybe (Tuple []) mInput
+        }
+
+    _ ->
+      Binding
+        { bCircuit = lexpr
+        , bOut     = Tuple []
+        , bIn      = fromMaybe (error "standalone expressions not allowed") mInput
+        }
+
+
 -- Checking ------------------------------------------------------------
 
 checkCircuit :: p ~ GhcPs => CircuitM ()
@@ -512,7 +537,7 @@ decFromBinding dflags i Binding {..} = do
       bod = varE noSrcSpan (var $ "run" <> show i) `appE` bCircuit `appE` inputExp
    in patBind bindPat bod
 
-patBind :: p ~ GhcPs => LPat p -> LHsExpr p -> HsBindLR p p
+patBind :: p ~ GhcPs => LPat p -> LHsExpr p -> HsBind p
 patBind lhs expr = PatBind NoExt lhs rhs ([], [])
   where
     rhs = GRHSs NoExt [gr] (noLoc $ EmptyLocalBinds NoExt)
@@ -531,30 +556,6 @@ deepShowD :: Data.Data a => a -> String
 deepShowD a = show (Data.toConstr a) <>
   -- " (" <> (unwords . fst) (SYB.gmapM (\x -> ([show $ Data.toConstr x], x)) a) <> ")"
   " (" <> (unwords . fst) (SYB.gmapM (\x -> ([deepShowD x], x)) a) <> ")"
-
--- | Create a binding expression
-bodyBinding
-  :: (p ~ GhcPs, loc ~ SrcSpan)
-  => Maybe (PortDescription PortName)
-  -- ^ the bound variable, this can be Nothing if there is no @<-@ (a circuit with no slaves)
-  -> GenLocated loc (HsExpr p)
-  -- ^ the statement with an optional @-<@
-  -> Binding (LHsExpr p) PortName
-bodyBinding mInput lexpr@(L _loc expr) =
-  case expr of
-    HsArrApp _xhsArrApp circuit port HsFirstOrderApp True ->
-      Binding
-        { bCircuit = circuit
-        , bOut     = bindMaster port
-        , bIn      = fromMaybe (Tuple []) mInput
-        }
-
-    _ ->
-      Binding
-        { bCircuit = lexpr
-        , bOut     = Tuple []
-        , bIn      = fromMaybe (error "standalone expressions not allowed") mInput
-        }
 
 unsnoc :: [a] -> Maybe ([a], a)
 unsnoc [] = Nothing
@@ -700,6 +701,26 @@ grr nm
   | nm == OccName.tvName = liftIO $ putStrLn "tvName"
   | otherwise = liftIO $ putStrLn "I dunno"
 
+completeUnderscores :: CircuitM ()
+completeUnderscores = do
+  binds <- L.use circuitBinds
+  masters <- L.use circuitMasters
+  slaves <- L.use circuitSlaves
+  let addDef :: String -> PortDescription PortName -> CircuitM ()
+      addDef suffix = \case
+        Ref (PortName loc (unpackFS -> name@('_':_))) -> do
+          let bind = patBind (varP loc (name <> suffix)) (varE loc (var "def"))
+          circuitLets <>= [L loc bind]
+
+        _ -> pure ()
+      addBind :: Binding exp PortName -> CircuitM ()
+      addBind (Binding _ bOut bIn) = do
+        L.traverseOf_ L.cosmos (addDef ":M2S") bOut
+        L.traverseOf_ L.cosmos (addDef ":S2M") bIn
+  mapM_ addBind binds
+  addBind (Binding undefined masters slaves)
+
+
 -- | Transform declations in the module by converting circuit blocks.
 transform
     :: GHC.Located (HsModule GhcPs)
@@ -728,12 +749,12 @@ transform = SYB.everywhereM (SYB.mkM transform') where
 
   -- the circuit keyword directly applied (either with parenthesis or with BlockArguments)
   transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
-    | isCircuitVar circuitVar = runCircuitM $ parseCircuit lappB >> circuitQQExpM
+    | isCircuitVar circuitVar = runCircuitM $ parseCircuit lappB >> completeUnderscores >> circuitQQExpM
 
   -- `circuit $` application
   transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
     | isCircuitVar circuitVar && isDollar infixVar =
-        runCircuitM $ parseCircuit appR >> circuitQQExpM
+        runCircuitM $ do parseCircuit appR >> completeUnderscores >> circuitQQExpM
 
   transform' e = pure e
 

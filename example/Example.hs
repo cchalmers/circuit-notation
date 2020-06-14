@@ -29,6 +29,8 @@ module Example where
 
 import Circuit
 
+import Data.Default
+
 idCircuit :: Circuit a a
 idCircuit = idC
 
@@ -50,15 +52,35 @@ noLambda = circuit $ do
   idC -< i
 
 sigExpr :: Signal Int -> Circuit () (DF Int)
-sigExpr sig = circuit (do
+sigExpr sig = circuit do
   i <- circuitC -< Signal sig
-  idC -< i)
+  idC -< i
 
 -- sigPat :: (( Signal Int -> Signal Int ))
 sigPat :: Circuit (Signal Int) (Signal Int)
 sigPat = circuit $ \(Signal a) -> do
   i <- (idC :: Circuit (Signal Int) (Signal Int)) -< Signal a
   idC -< i
+
+fstC :: Circuit (Signal a, Signal b) (Signal a)
+fstC = circuit $ \(a, _b) -> do idC -< a
+
+fstC2 :: Circuit (Signal a, Signal b) (Signal a)
+fstC2 = circuit $ \ab -> do
+  (a, _b) <- idC -< ab
+  idC -< a
+
+fstC3 :: Circuit (Signal a, Signal b) (Signal a)
+fstC3 = circuit $ \(a, _b) -> a
+
+unfstC :: Circuit (DF a) (DF a, DF b)
+unfstC = circuit $ \a -> do
+  idC -< (a, _b)
+
+unfstC2 :: Circuit (DF a) (DF a, DF b)
+unfstC2 = circuit $ \a -> do
+  ab <- idC -< (a, _b)
+  idC -< ab
 
 swapTest :: forall a b. Circuit (a,b) (b,a)
 -- swapTest = circuit $ \(a,b) -> (idCircuit :: Circuit (b, a) (b, a)) -< (b, a)

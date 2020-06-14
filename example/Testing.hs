@@ -50,3 +50,6 @@ swapIC c = circuit $ \((a :: Int ,b) :: (Int, Int)) -> do
   a' <- c -< a :: int
   b' <- c -< b
   idC -< (b',a')
+
+fstC :: Circuit (Signal a, Signal b) (Signal a)
+fstC = circuit $ \(a, _b) -> do idC -< a
