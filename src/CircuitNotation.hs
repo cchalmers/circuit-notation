@@ -149,15 +149,19 @@ data CircuitQQ dec exp nm = CircuitQQ
     deriving (Functor)
 
 data CircuitState dec exp nm = CircuitState
-    { _cErrors      :: Bag Err.ErrMsg
-    , _counter      :: Int
+    { _cErrors        :: Bag Err.ErrMsg
+    , _counter        :: Int
     -- ^ unique counter for generated variables
-    , _circuitTypes :: [LSig GhcPs]
+    , _circuitSlaves  :: PortDescription nm
+    -- ^ the final statement in a circuit
+    , _circuitTypes   :: [LSig GhcPs]
     -- ^ type signatures in let bindings
-    , _circuitLets  :: [dec]
+    , _circuitLets    :: [dec]
     -- ^ user defined let expression inside the circuit
-    , _circuitBinds :: [Binding exp nm]
+    , _circuitBinds   :: [Binding exp nm]
     -- ^ @out <- circuit <- in@ statements
+    , _circuitMasters :: PortDescription nm
+    -- ^ ports bound at the first lambda of a circuit
     }
 
 L.makeLenses 'CircuitState
@@ -174,9 +178,11 @@ runCircuitM (CircuitM m) = do
   let emptyCircuitState = CircuitState
         { _cErrors = emptyBag
         , _counter = 0
+        , _circuitSlaves = Tuple []
         , _circuitTypes = []
         , _circuitLets = []
         , _circuitBinds = []
+        , _circuitMasters = Tuple []
         }
   (a, s) <- runStateT m emptyCircuitState
   let errs = _cErrors s
@@ -322,58 +328,53 @@ fromRdrName = \case
 parseCircuit
   :: p ~ GhcPs
   => LHsExpr p
-  -> CircuitM (CircuitQQ (LHsBind p) (LHsExpr p) PortName)
+  -> CircuitM ()
 parseCircuit = \case
   -- strip out parenthesis
   L _ (HsPar _ lexp) -> parseCircuit lexp
 
   -- a lambda to match the slave ports
-  L _loc (simpleLambda -> Just ([matchPats], body)) ->
-    circuitBody (bindSlave matchPats) body
+  L _ (simpleLambda -> Just ([matchPats], body)) -> do
+    circuitSlaves .= bindSlave matchPats
+    circuitBody body
 
   -- a version without a lamda (i.e. no slaves)
-  e -> circuitBody (Tuple []) e
+  e -> circuitBody e
 
 -- | The main part of a circuit expression. Either a do block or simple rearranging case.
 circuitBody
   :: p ~ GhcPs
-  => PortDescription PortName
-  -> LHsExpr p
-  -> CircuitM (CircuitQQ (LHsBind p) (LHsExpr p) PortName)
-circuitBody slaves = \case
+  => LHsExpr p
+  -> CircuitM ()
+circuitBody = \case
   -- strip out parenthesis
-  L _ (HsPar _ lexp) -> circuitBody slaves lexp
+  L _ (HsPar _ lexp) -> circuitBody lexp
 
-  L _ (HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, finStmt)))) -> do
-    (masters, masterBindings) <-
-      case finStmt of
-        L _ (BodyStmt _bodyX bod _idr _idr') -> pure $ finalStmt bod
-        L finLoc stmt ->
-          throwOneError =<< err finLoc ("unhandled final stmt " <> show (Data.toConstr stmt))
-
+  L _ (HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, L finLoc finStmt)))) -> do
     mapM_ handleStmtM stmts
-    sigs <- L.use circuitTypes
-    lets <- L.use circuitLets
-    bindings <- L.use circuitBinds
 
-    pure CircuitQQ
-      { circuitQQSlaves = slaves
-      , circuitQQTypes = sigs
-      , circuitQQLets = lets
-      , circuitQQBinds = masterBindings ++ bindings
-      , circuitQQMasters = masters
-      }
+    case finStmt of
+      BodyStmt _bodyX bod _idr _idr' ->
+        case bod of
+          -- special case for idC as the final statement, gives better type inferences and generates nicer
+          -- code
+          L _ (HsArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) arg _ _)
+            | OccName.occNameString occ == "idC" -> circuitMasters .= bindMaster arg
+
+          -- Otherwise create a binding and use that as the master. This is equivalent to changing
+          --   c -< x
+          -- into
+          --   finalStmt <- c -< x
+          --   idC -< finalStmt
+          _ -> do
+            let ref = Ref (PortName finLoc "final:stmt")
+            circuitBinds <>= [bodyBinding (Just ref) (bod)]
+            circuitMasters .= ref
+
+      stmt -> errM finLoc ("Unhandled final stmt " <> show (Data.toConstr stmt))
 
   -- the simple case without do notation
-  L loc master ->
-    let masters = bindMaster (L loc master)
-    in pure CircuitQQ
-      { circuitQQSlaves = slaves
-      , circuitQQTypes = []
-      , circuitQQLets = []
-      , circuitQQBinds = []
-      , circuitQQMasters = masters
-      }
+  L loc master -> circuitMasters .= bindMaster (L loc master)
 
 -- | Handle a single statement.
 handleStmtM
@@ -434,39 +435,20 @@ bindMaster (L loc expr) = case expr of
       (Outputable.text $ "Unhandled expression " <> show (Data.toConstr expr))
       )
 
--- | The final statement of a circuit do block.
-finalStmt
-  :: p ~ GhcPs
-  => LHsExpr p
-  -> (PortDescription PortName, [Binding (LHsExpr GhcPs) PortName])
-finalStmt (L loc expr) = case expr of
- -- special case for idC as the final statement, gives better type inferences and generates nicer
- -- code
-  HsArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) arg _ _
-    | OccName.occNameString occ == "idC" -> (bindMaster arg, [])
-
-  -- Otherwise create a binding and use that as the master. This is equivalent to changing
-  --   c -< x
-  -- into
-  --   finalStmt <- c -< x
-  --   idC -< finalStmt
-  _ -> let ref = Ref (PortName loc "final:stmt")
-       in (ref, [bodyBinding (Just ref) (L loc expr)])
-
 -- Checking ------------------------------------------------------------
 
-checkCircuit :: p ~ GhcPs => CircuitQQ (LHsBind p) (LHsExpr p) PortName -> CircuitM ()
-checkCircuit cQQ = checkMatching cQQ
+checkCircuit :: p ~ GhcPs => CircuitM ()
+checkCircuit = pure ()
 
-checkMatching :: p ~ GhcPs => CircuitQQ (LHsBind p) (LHsExpr p) PortName -> CircuitM ()
-checkMatching CircuitQQ {..} = do
-  -- data CircuitQQ dec exp nm = CircuitQQ
-  --   { circuitQQSlaves  :: PortDescription nm
-  --   , circuitQQLets    :: [dec]
-  --   , circuitQQBinds   :: [Binding exp nm]
-  --   , circuitQQMasters :: PortDescription nm
-  --   } deriving (Functor)
-  pure ()
+-- checkMatching :: p ~ GhcPs => CircuitQQ (LHsBind p) (LHsExpr p) PortName -> CircuitM ()
+-- checkMatching CircuitQQ {..} = do
+--   -- data CircuitQQ dec exp nm = CircuitQQ
+--   --   { circuitQQSlaves  :: PortDescription nm
+--   --   , circuitQQLets    :: [dec]
+--   --   , circuitQQBinds   :: [Binding exp nm]
+--   --   , circuitQQMasters :: PortDescription nm
+--   --   } deriving (Functor)
+--   pure ()
 
 
 -- Creating ------------------------------------------------------------
@@ -580,28 +562,6 @@ unsnoc [x] = Just ([], x)
 unsnoc (x:xs) = Just (x:a, b)
     where Just (a,b) = unsnoc xs
 
--- | Construct the let in expression that expressses the circuit. This doesn't include the inference
--- helper.
-mkCircuit
-  :: p ~ GhcPs
-  => PortDescription PortName
-  -- ^ slave ports
-  -> [LHsBindLR p p]
-  -- ^ let bindings
-  -> PortDescription PortName
-  -- ^ master ports
-  -> CircuitM (LHsExpr p)
-  -- ^ circuit
-mkCircuit slaves lets masters = do
-  dflags <- GHC.getDynFlags
-  let pats = bindOutputs dflags masters slaves
-      res  = createInputs slaves masters
-
-      body :: LHsExpr GhcPs
-      body = letE noSrcSpan [] lets res
-
-  pure $ circuitConstructor noSrcSpan `appE` lamE [pats] body
-
 varT :: SrcSpan -> String -> LHsType GhcPs
 varT loc nm = L loc (HsTyVar NoExt NotPromoted (L loc (tyVar nm)))
 
@@ -632,23 +592,6 @@ bindRunCircuitTypes dflags binds = tupT (map mkTy binds)
         a = portTypeSig dflags (bOut bind)
         b = portTypeSig dflags (bIn bind)
 
-mkInferenceHelperTy
-  :: p ~ GhcPs
-  => GHC.DynFlags
-  -- -> PortDescription PortName
-  -- -> PortDescription PortName
-  -> CircuitQQ (LHsBind p) (LHsExpr p) PortName
-  -> LHsType p
-mkInferenceHelperTy dflags CircuitQQ {..} =
-  noLoc $ HsFunTy noExt
-    (noLoc $ HsAppTy NoExt topLevelCircuitTy b)
-    -- (mkRunCircuitTy a b)
-    (bindRunCircuitTypes dflags circuitQQBinds)
-  where
-    a = portTypeSig dflags circuitQQSlaves -- (varT noSrcSpan "aa")
-    b = portTypeSig dflags circuitQQMasters -- (varT noSrcSpan "b")
-    topLevelCircuitTy = noLoc $ HsAppTy NoExt (conT noSrcSpan constructorName) a
-
 getTypeAnnots
   :: p ~ GhcPs
   => PortDescription l
@@ -668,32 +611,70 @@ tyEq l a b = L l $ HsOpTy NoExt a (noLoc eqTyCon_RDR) b
 
 circuitQQExpM
   :: p ~ GhcPs
-  => CircuitQQ (LHsBind p) (LHsExpr p) PortName
-  -> CircuitM (LHsExpr p)
-circuitQQExpM c@CircuitQQ {..} = do
-  checkCircuit c
-  dflags <- GHC.getDynFlags
-  let decs = concat
-        [ circuitQQLets
-        , imap (\i -> noLoc . decFromBinding dflags i) circuitQQBinds
-        ]
-  cir <- mkCircuit circuitQQSlaves decs circuitQQMasters
+  => CircuitM (LHsExpr p)
+circuitQQExpM = do
+  checkCircuit
 
-  let inferenceSig :: LHsSigType GhcPs
-      -- inferenceSig = HsIB NoExt (noLoc (varT NoExt NotPromoted (noLoc (tyVar "a"))))
-      -- inferenceSig = HsIB NoExt (mkRunCircuitTy (noLoc $ varT "a") (noLoc $ varT "b"))
-      inferencePlainSig = mkInferenceHelperTy dflags c
-      inferenceSig = HsIB NoExt (noLoc $ HsQualTy NoExt (noLoc context) inferencePlainSig)
-      allTypes = getTypeAnnots circuitQQSlaves <> getTypeAnnots circuitQQMasters
+  dflags <- GHC.getDynFlags
+  binds <- L.use circuitBinds
+  lets <- L.use circuitLets
+  slaves <- L.use circuitSlaves
+  masters <- L.use circuitMasters
+
+  -- Construction of the circuit expression
+  let decs = concat
+        [ lets
+        , imap (\i -> noLoc . decFromBinding dflags i) binds
+        ]
+  let pats = bindOutputs dflags masters slaves
+      res  = createInputs slaves masters
+
+      body :: LHsExpr GhcPs
+      body = letE noSrcSpan [] decs res
+  let cir = circuitConstructor noSrcSpan `appE` lamE [pats] body
+
+  -- The inference helper is a basically a tuple of `runCircuit`s with a type signature that matches
+  -- the structure of the circuit notation. The first argument of the helper is the final circuit so
+  -- we can get the masters and slaves in scope. All type signatures that are applied to the circuit
+  -- ports are given as a context to the helper. For example, for the circuit
+  --
+  -- swapIC c = circuit $ \(a :: Int, b) -> do
+  --   a' <- c -< a
+  --   b' <- c -< b
+  --   idC -< (b',a')
+  --
+  -- will produce the helper
+  --
+  -- inferenceHelper ::
+  --   aTy ~ Int =>
+  --   Circuit (aTy, bTy) (b'Ty, a'Ty)
+  --   -> (Circuit aTy a'Ty -> CircuitT aTy a'Ty,
+  --       Circuit bTy b'Ty -> CircuitT bTy b'Ty)
+  -- inferenceHelper = const (runCircuit, runCircuit)
+
+  let -- the plain signature of the function without a context
+      runCircuitsType =
+        noLoc $ HsFunTy noExt
+          (noLoc $ HsAppTy NoExt topLevelCircuitTy b)
+          (bindRunCircuitTypes dflags binds)
+        where
+          a = portTypeSig dflags slaves
+          topLevelCircuitTy = noLoc $ HsAppTy NoExt (conT noSrcSpan constructorName) a
+          b = portTypeSig dflags masters
+
+      -- the context from type signatures added to ports
+      allTypes = getTypeAnnots slaves <> getTypeAnnots masters
       context = map (\(ty, p) -> tyEq noSrcSpan (portTypeSig dflags p) (HsTypes.hsSigWcType ty)) allTypes
+
+      -- the full signature
+      inferenceSig :: LHsSigType GhcPs
+      inferenceSig = HsIB NoExt (noLoc $ HsQualTy NoExt (noLoc context) runCircuitsType)
       inferenceHelperTy =
         TypeSig NoExt
           [noLoc (var "inferenceHelper")]
           (HsWC NoExt inferenceSig)
-          -- (HsWC NoExt (noLoc $ HsQualTy NoExt context inferenceSig))
-          -- ((HsWC NoExt (noLoc (HsIB NoExt (noLoc (HsTyVar undefined undefined undefined))))))
 
-  let numBinds = length circuitQQBinds
+  let numBinds = length binds
       runCircuitExprs =
         tupE noSrcSpan $ replicate numBinds (runCircuitFun noSrcSpan)
       runCircuitBinds = tupP $ map (\i -> varP noSrcSpan ("run" <> show i)) [0 .. numBinds-1]
@@ -747,12 +728,12 @@ transform = SYB.everywhereM (SYB.mkM transform') where
 
   -- the circuit keyword directly applied (either with parenthesis or with BlockArguments)
   transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
-    | isCircuitVar circuitVar = runCircuitM $ parseCircuit lappB >>= circuitQQExpM
+    | isCircuitVar circuitVar = runCircuitM $ parseCircuit lappB >> circuitQQExpM
 
   -- `circuit $` application
   transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
     | isCircuitVar circuitVar && isDollar infixVar =
-        runCircuitM $ parseCircuit appR >>= circuitQQExpM
+        runCircuitM $ parseCircuit appR >> circuitQQExpM
 
   transform' e = pure e
 
