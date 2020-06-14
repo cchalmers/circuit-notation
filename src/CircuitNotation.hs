@@ -31,6 +31,7 @@ module CircuitNotation (plugin) where
 import           Control.Exception
 import           Control.Monad.IO.Class (MonadIO (..))
 import qualified Data.Data              as Data
+import           Data.Default
 import           Data.Maybe             (fromMaybe)
 import           Debug.Trace
 import           SrcLoc
@@ -38,6 +39,7 @@ import           System.IO.Unsafe
 
 -- ghc
 import           Bag
+import qualified Convert
 import qualified ErrUtils               as Err
 import           FastString             (mkFastString, unpackFS)
 import qualified GhcPlugins             as GHC
@@ -45,6 +47,7 @@ import           HscTypes               (throwOneError)
 import           HsExtension            (GhcPs, NoExt (..))
 import           HsSyn
 import qualified HsTypes
+import qualified Language.Haskell.TH    as TH
 import qualified OccName
 import qualified Outputable
 import           PrelNames              (eqTyCon_RDR)
@@ -250,6 +253,12 @@ tupE loc elems = L loc $ ExplicitTuple NoExt tupArgs GHC.Boxed
 
 unL :: Located a -> a
 unL (L _ a) = a
+
+thName :: TH.Name -> GHC.RdrName
+thName nm =
+  case Convert.thRdrNameGuesses nm of
+    [name] -> name
+    _      -> error "thName called on a non NameG Name"
 
 portTypeSig :: p ~ GhcPs => GHC.DynFlags -> PortDescription PortName -> LHsType p
 portTypeSig dflags = \case
@@ -550,7 +559,7 @@ runCircuitFun :: p ~ GhcPs => SrcSpan -> LHsExpr p
 runCircuitFun loc = varE loc (var runCircuitName)
 
 constVar :: p ~ GhcPs => SrcSpan -> LHsExpr p
-constVar loc = varE loc (var "const")
+constVar loc = varE loc (thName 'const)
 
 deepShowD :: Data.Data a => a -> String
 deepShowD a = show (Data.toConstr a) <>
@@ -709,7 +718,7 @@ completeUnderscores = do
   let addDef :: String -> PortDescription PortName -> CircuitM ()
       addDef suffix = \case
         Ref (PortName loc (unpackFS -> name@('_':_))) -> do
-          let bind = patBind (varP loc (name <> suffix)) (varE loc (var "def"))
+          let bind = patBind (varP loc (name <> suffix)) (varE loc (thName 'def))
           circuitLets <>= [L loc bind]
 
         _ -> pure ()

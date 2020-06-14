@@ -29,8 +29,6 @@ module Example where
 
 import Circuit
 
-import Data.Default
-
 idCircuit :: Circuit a a
 idCircuit = idC
 
@@ -71,7 +69,7 @@ fstC2 = circuit $ \ab -> do
   idC -< a
 
 fstC3 :: Circuit (Signal a, Signal b) (Signal a)
-fstC3 = circuit $ \(a, _b) -> a
+fstC3 = circuit \(a, _b) -> a
 
 unfstC :: Circuit (DF a) (DF a, DF b)
 unfstC = circuit $ \a -> do
