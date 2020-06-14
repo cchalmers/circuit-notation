@@ -110,7 +110,7 @@ instance Show PortName where
 data PortDescription a = Tuple [PortDescription a]
     | Vec [PortDescription a]
     | Ref a
-    | Lazy (PortDescription a)
+    | Lazy SrcSpan (PortDescription a)
     | SignalExpr (LHsExpr GhcPs)
     | SignalPat (LPat GhcPs)
     | PortType (LHsSigWcType GhcPs) (PortDescription a)
@@ -121,7 +121,7 @@ instance L.Plated (PortDescription a) where
   plate f = \case
     Tuple ps -> Tuple <$> traverse f ps
     Vec ps -> Vec <$> traverse f ps
-    Lazy p -> Lazy <$> f p
+    Lazy s p -> Lazy s <$> f p
     PortType t p -> PortType t <$> f p
     p -> pure p
 
@@ -219,6 +219,9 @@ vecP pats = noLoc $ ListPat NoExt pats
 varP :: p ~ GhcPs => SrcSpan -> String -> LPat p
 varP loc nm = L loc $ VarPat NoExt (L loc $ var nm)
 
+tildeP :: p ~ GhcPs => SrcSpan -> LPat p -> LPat p
+tildeP loc lpat = L loc (LazyPat NoExt lpat)
+
 tupT :: p ~ GhcPs => [LHsType p] -> LHsType p
 tupT tys = noLoc $ HsTupleTy NoExt HsBoxedTuple tys
 
@@ -267,7 +270,7 @@ portTypeSig dflags = \case
   Ref (PortName loc fs) -> varT loc (GHC.unpackFS fs <> "Ty")
   PortErr loc msgdoc -> unsafePerformIO . throwOneError $
     Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "portTypeSig") msgdoc
-  Lazy p -> portTypeSig dflags p
+  Lazy _ p -> portTypeSig dflags p
   -- TODO make the 'a' unique
   SignalExpr (L l _) -> L l $ HsAppTy NoExt (conT l "Signal") (varT l "a")
   SignalPat (L l _) -> L l $ HsAppTy NoExt (conT l "Signal") (varT l "a")
@@ -289,7 +292,7 @@ letE
   -- ^ location for top level let bindings
   -> [LSig GhcPs]
   -- ^ type signatures
-  -> [LHsBindLR p p]
+  -> [LHsBind p]
   -- ^ let bindings
   -> LHsExpr p
   -- ^ final `in` expressions
@@ -413,6 +416,7 @@ bindSlave (L loc expr) = case expr of
   ConPatIn (L _ (GHC.Unqual occ)) (PrefixCon [lpat])
     | OccName.occNameString occ == "Signal" -> SignalPat lpat
   SigPat ty port -> PortType ty (bindSlave port)
+  LazyPat _ lpat -> Lazy loc (bindSlave lpat)
   pat ->
     PortErr loc
             (Err.mkLocMessageAnn
@@ -494,7 +498,7 @@ bindWithSuffix dflags suffix = \case
   Ref (PortName loc fs) -> varP loc (GHC.unpackFS fs <> suffix)
   PortErr loc msgdoc -> unsafePerformIO . throwOneError $
     Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "Unhandled bind") msgdoc
-  Lazy _ -> error "bindWithSuffix Lazy not handled" -- tildeP $ bindWithSuffix suffix p
+  Lazy loc p -> tildeP loc $ bindWithSuffix dflags suffix p
   SignalExpr (L l _) -> L l (WildPat NoExt)
   SignalPat lpat -> lpat
   PortType _ p -> bindWithSuffix dflags suffix p
@@ -521,7 +525,7 @@ expWithSuffix suffix = \case
   Vec ps   -> vecE noSrcSpan $ fmap (expWithSuffix suffix) ps
   Ref (PortName loc fs)   -> varE loc (var $ GHC.unpackFS fs <> suffix)
   -- lazyness only affects the pattern side
-  Lazy p   -> expWithSuffix suffix p
+  Lazy _ p   -> expWithSuffix suffix p
   PortErr _ _ -> error "expWithSuffix PortErr!"
   SignalExpr lexpr -> lexpr
   SignalPat (L l _) -> tupE l []
