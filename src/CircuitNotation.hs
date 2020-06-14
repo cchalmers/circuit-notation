@@ -22,9 +22,9 @@ Notation for describing the 'Circuit' type.
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
 
-{-# OPTIONS_GHC -Wno-unused-top-binds #-}
+-- {-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
-module CircuitNotation (plugin, showC, trace) where
+module CircuitNotation (plugin) where
 
 -- base
 import           Control.Exception
@@ -33,9 +33,7 @@ import qualified Data.Data              as Data
 import           Data.Either            (partitionEithers)
 import           Data.Maybe             (fromMaybe)
 import           Debug.Trace
-import           Data.Typeable
 import           SrcLoc
-import           System.IO
 import           System.IO.Unsafe
 
 -- ghc
@@ -63,6 +61,16 @@ import           Control.Monad.Writer
 
 -- syb
 import qualified Data.Generics          as SYB
+
+-- The stages of this plugin
+--
+-- 1. Go through the parsed module source and find usages of the circuit keyword (`transform`).
+-- 2. Parse the circuit, either do notation or a one liner, go through each statement and convert it
+--    to a CircuitQQ.
+-- 3. Go through the CircuitQQ and check that everything is consistent (every master has a matching
+--    slave).
+-- 4. Convert the Bindings to let statements, at the same time build up a description of the types
+--    to make the type descriptor helper.
 
 -- | The plugin for circuit notation.
 plugin :: GHC.Plugin
@@ -117,7 +125,7 @@ data PortName = PortName SrcSpan GHC.FastString
 instance Show PortName where
   show (PortName _ fs) = GHC.unpackFS fs
 
--- | A single circuit binding.
+-- | A single circuit binding. These are generated from parsing statements.
 -- @
 -- bOut <- bCircuit -< bIn
 -- @
@@ -162,19 +170,12 @@ runCircuitM (CircuitM m) = do
   unless (isEmptyBag errs) $ liftIO . throwIO $ GHC.mkSrcErr errs
   pure a
 
-ppr :: GHC.Outputable a => a -> CircuitM ()
-ppr a = do
-  dflags <- GHC.getDynFlags
-  liftIO $ putStrLn (GHC.showPpr dflags a)
-
 err :: SrcSpan -> String -> CircuitM Err.ErrMsg
 err loc msg = do
   dflags <- GHC.getDynFlags
   let errMsg = Err.mkLocMessageAnn Nothing Err.SevFatal loc (Outputable.text msg)
   pure $
     Err.mkErrMsg dflags loc Outputable.alwaysQualify errMsg
-
--- PortDescription -----------------------------------------------------
 
 data PortDescription a
   = Tuple [PortDescription a]
@@ -195,6 +196,11 @@ instance L.Plated (PortDescription a) where
     PortType t p -> PortType t <$> f p
     p -> pure p
 
+-- ghc helpers ---------------------------------------------------------
+
+-- It's very possible that most of these are already in the ghc library in some form. It's not the
+-- easiest library to descover these kind of functions.
+
 tupP :: p ~ GhcPs => [LPat p] -> LPat p
 tupP pats = noLoc $ TuplePat NoExt pats GHC.Boxed
 
@@ -204,13 +210,40 @@ vecP pats = noLoc $ ListPat NoExt pats
 varP :: p ~ GhcPs => SrcSpan -> String -> LPat p
 varP loc nm = L loc $ VarPat NoExt (L loc $ var nm)
 
--- Types ---------------------------------------------------------------
-
 tupT :: p ~ GhcPs => [LHsType p] -> LHsType p
 tupT tys = noLoc $ HsTupleTy NoExt HsBoxedTuple tys
 
 vecT :: p ~ GhcPs => [LHsType p] -> LHsType p
 vecT _tys = error "can't do a vec type yet" -- noLoc $ HsTupleTy NoExt HsBoxedTuple tys
+
+appE :: p ~ GhcPs => LHsExpr p -> LHsExpr p -> LHsExpr p
+appE fun arg = L noSrcSpan $ HsApp NoExt fun arg
+
+varE :: p ~ GhcPs => SrcSpan -> GHC.RdrName -> LHsExpr p
+varE loc rdr = L loc (HsVar NoExt (L loc rdr))
+
+var :: String -> GHC.RdrName
+var = GHC.Unqual . OccName.mkVarOcc
+
+tyVar :: String -> GHC.RdrName
+tyVar = GHC.Unqual . OccName.mkTyVarOcc
+
+tyCon :: String -> GHC.RdrName
+tyCon = GHC.Unqual . OccName.mkTcOcc
+
+con :: String -> GHC.RdrName
+con = GHC.Unqual . OccName.mkDataOcc
+
+vecE :: p ~ GhcPs => SrcSpan -> [LHsExpr p] -> LHsExpr p
+vecE loc elems = L loc $ ExplicitList NoExt Nothing elems
+
+tupE :: p ~ GhcPs => SrcSpan -> [LHsExpr p] -> LHsExpr p
+tupE loc elems = L loc $ ExplicitTuple NoExt tupArgs GHC.Boxed
+  where
+    tupArgs = map (\arg@(L l _) -> L l (Present NoExt arg)) elems
+
+unL :: Located a -> a
+unL (L _ a) = a
 
 portTypeSig :: p ~ GhcPs => GHC.DynFlags -> PortDescription PortName -> LHsType p
 portTypeSig dflags = \case
@@ -225,8 +258,6 @@ portTypeSig dflags = \case
   SignalPat (L l _) -> L l $ HsAppTy NoExt (conT l "Signal") (varT l "a")
   PortType _ p -> portTypeSig dflags p
 
--- Parsing -------------------------------------------------------------
-
 -- | Extract a simple lambda into inputs and body.
 simpleLambda :: HsExpr p -> Maybe ([LPat p], LHsExpr p)
 simpleLambda expr = do
@@ -235,6 +266,50 @@ simpleLambda expr = do
   GRHSs _grX grHss _grLocalBinds <- Just matchGr
   [L _ (GRHS _ _ body)] <- Just grHss
   Just (matchPats, body)
+
+-- | Create a simple let binding.
+letE
+  :: p ~ GhcPs
+  => SrcSpan
+  -- ^ location for top level let bindings
+  -> [LSig GhcPs]
+  -- ^ type signatures
+  -> [LHsBindLR p p]
+  -- ^ let bindings
+  -> LHsExpr p
+  -- ^ final `in` expressions
+  -> LHsExpr p
+letE loc sigs binds expr = L loc (HsLet NoExt localBinds expr)
+  where
+    localBinds :: LHsLocalBindsLR GhcPs GhcPs
+    localBinds = L loc $ HsValBinds NoExt valBinds
+
+    valBinds :: HsValBindsLR GhcPs GhcPs
+    valBinds = ValBinds NoExt hsBinds sigs
+
+    hsBinds :: LHsBindsLR GhcPs GhcPs
+    hsBinds = listToBag binds
+
+-- | Simple construction of a lamda expression
+lamE :: p ~ GhcPs => [LPat p] -> LHsExpr p -> LHsExpr p
+lamE pats expr = noLoc $ HsLam NoExt mg
+  where
+    mg = MG NoExt matches GHC.Generated
+
+    matches :: Located [LMatch GhcPs (LHsExpr GhcPs)]
+    matches = noLoc $ [singleMatch]
+
+    singleMatch :: LMatch GhcPs (LHsExpr GhcPs)
+    singleMatch = noLoc $ Match NoExt LambdaExpr pats grHss
+
+    grHss :: GRHSs GhcPs (LHsExpr GhcPs)
+    grHss = GRHSs NoExt [grHs] (noLoc $ EmptyLocalBinds NoExt)
+
+    grHs :: LGRHS GhcPs (LHsExpr GhcPs)
+    grHs = noLoc $ GRHS NoExt [] expr
+
+
+-- Parsing -------------------------------------------------------------
 
 -- | "parse" a circuit, i.e. convert it from ghc's ast to our representation of a circuit. This is
 -- the expression following the 'circuit' keyword.
@@ -459,28 +534,6 @@ patBind lhs expr = PatBind NoExt lhs rhs ([], [])
     rhs = GRHSs NoExt [gr] (noLoc $ EmptyLocalBinds NoExt)
     gr  = L (getLoc expr) (GRHS NoExt [] expr)
 
-letE
-  :: p ~ GhcPs
-  => SrcSpan
-  -- ^ location for top level let bindings
-  -> [LSig GhcPs]
-  -- ^ type signatures
-  -> [LHsBindLR p p]
-  -- ^ let bindings
-  -> LHsExpr p
-  -- ^ final `in` expressions
-  -> LHsExpr p
-letE loc sigs binds expr = L loc (HsLet NoExt localBinds expr)
-  where
-    localBinds :: LHsLocalBindsLR GhcPs GhcPs
-    localBinds = L loc $ HsValBinds NoExt valBinds
-
-    valBinds :: HsValBindsLR GhcPs GhcPs
-    valBinds = ValBinds NoExt hsBinds sigs
-
-    hsBinds :: LHsBindsLR GhcPs GhcPs
-    hsBinds = listToBag binds
-
 circuitConstructor :: p ~ GhcPs => SrcSpan -> LHsExpr p
 circuitConstructor loc = varE loc (con constructorName)
 
@@ -489,38 +542,6 @@ runCircuitFun loc = varE loc (var runCircuitName)
 
 constVar :: p ~ GhcPs => SrcSpan -> LHsExpr p
 constVar loc = varE loc (var "const")
-
-appE :: p ~ GhcPs => LHsExpr p -> LHsExpr p -> LHsExpr p
-appE fun arg = L noSrcSpan $ HsApp NoExt fun arg
-
-varE :: p ~ GhcPs => SrcSpan -> GHC.RdrName -> LHsExpr p
-varE loc rdr = L loc (HsVar NoExt (L loc rdr))
-
-var :: String -> GHC.RdrName
-var = GHC.Unqual . OccName.mkVarOcc
-
-tyVar :: String -> GHC.RdrName
-tyVar = GHC.Unqual . OccName.mkTyVarOcc
-
-tyCon :: String -> GHC.RdrName
-tyCon = GHC.Unqual . OccName.mkTcOcc
-
-con :: String -> GHC.RdrName
-con = GHC.Unqual . OccName.mkDataOcc
-
-vecE :: p ~ GhcPs => SrcSpan -> [LHsExpr p] -> LHsExpr p
-vecE loc elems = L loc $ ExplicitList NoExt Nothing elems
-
-tupE :: p ~ GhcPs => SrcSpan -> [LHsExpr p] -> LHsExpr p
-tupE loc elems = L loc $ ExplicitTuple NoExt tupArgs GHC.Boxed
-  where
-    tupArgs = map (\arg@(L l _) -> L l (Present NoExt arg)) elems
-
-debug :: MonadIO m => String -> m ()
-debug = liftIO . hPutStrLn stderr
-
-unL :: Located a -> a
-unL (L _ a) = a
 
 deepShowD :: Data.Data a => a -> String
 deepShowD a = show (Data.toConstr a) <>
@@ -626,11 +647,6 @@ mkInferenceHelperTy dflags CircuitQQ {..} =
     b = portTypeSig dflags circuitQQMasters -- (varT noSrcSpan "b")
     topLevelCircuitTy = noLoc $ HsAppTy NoExt (conT noSrcSpan constructorName) a
 
-filteredBy :: (L.Indexable a p, Applicative f) => (a -> Maybe a) -> p a (f a) -> a -> f a
-filteredBy p f val = case p val of
-  Nothing      -> pure val
-  Just witness -> L.indexed f witness val
-
 getTypeAnnots
   :: p ~ GhcPs
   => PortDescription l
@@ -645,6 +661,8 @@ tyEq :: p ~ GhcPs => SrcSpan -> LHsType p -> LHsType p -> LHsType p
 tyEq l a b = L l $ HsOpTy NoExt a (noLoc eqTyCon_RDR) b
 -- eqTyCon is a special name that has to be exactly correct for ghc to recognise it. In 8.6 this
 -- lives in PrelNames and is called eqTyCon_RDR, in later ghcs it's from TysWiredIn.
+
+-- Final construction --------------------------------------------------
 
 circuitQQExpM
   :: p ~ GhcPs
@@ -688,23 +706,6 @@ circuitQQExpM c@CircuitQQ {..} = do
                      (varE noSrcSpan (var "cir")))
     ])
     (varE noSrcSpan (var "cir"))
-
-lamE :: p ~ GhcPs => [LPat p] -> LHsExpr p -> LHsExpr p
-lamE pats expr = noLoc $ HsLam NoExt mg
-  where
-    mg = MG NoExt matches GHC.Generated
-
-    matches :: Located [LMatch GhcPs (LHsExpr GhcPs)]
-    matches = noLoc $ [singleMatch]
-
-    singleMatch :: LMatch GhcPs (LHsExpr GhcPs)
-    singleMatch = noLoc $ Match NoExt LambdaExpr pats grHss
-
-    grHss :: GRHSs GhcPs (LHsExpr GhcPs)
-    grHss = GRHSs NoExt [grHs] (noLoc $ EmptyLocalBinds NoExt)
-
-    grHs :: LGRHS GhcPs (LHsExpr GhcPs)
-    grHs = noLoc $ GRHS NoExt [] expr
 
 grr :: MonadIO m => OccName.NameSpace -> m ()
 grr nm
@@ -753,8 +754,15 @@ transform = SYB.everywhereM (SYB.mkM transform') where
 
   transform' e = pure e
 
-showC :: Data.Data a => a -> String
-showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
+-- Debugging functions -------------------------------------------------
+
+-- ppr :: GHC.Outputable a => a -> CircuitM ()
+-- ppr a = do
+--   dflags <- GHC.getDynFlags
+--   liftIO $ putStrLn (GHC.showPpr dflags a)
+
+-- showC :: Data.Data a => a -> String
+-- showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
 
 -- ppp :: MonadIO m => String -> m ()
 -- ppp s = case SP.parseValue s of
