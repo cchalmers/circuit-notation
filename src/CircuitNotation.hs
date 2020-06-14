@@ -19,10 +19,11 @@ Notation for describing the 'Circuit' type.
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
 
--- {-# OPTIONS_GHC -Wno-unused-top-binds #-}
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
 module CircuitNotation (plugin) where
 
@@ -30,7 +31,6 @@ module CircuitNotation (plugin) where
 import           Control.Exception
 import           Control.Monad.IO.Class (MonadIO (..))
 import qualified Data.Data              as Data
-import           Data.Either            (partitionEithers)
 import           Data.Maybe             (fromMaybe)
 import           Debug.Trace
 import           SrcLoc
@@ -41,16 +41,17 @@ import           Bag
 import qualified ErrUtils               as Err
 import           FastString             (mkFastString)
 import qualified GhcPlugins             as GHC
+import           HscTypes               (throwOneError)
 import           HsExtension            (GhcPs, NoExt (..))
 import           HsSyn
-import           HscTypes               (throwOneError)
+import qualified HsTypes
 import qualified OccName
 import qualified Outputable
 import           PrelNames              (eqTyCon_RDR)
-import qualified HsTypes
 
 -- lens
 import qualified Control.Lens           as L
+import           Control.Lens.Operators
 
 -- mtl
 import           Control.Monad.State
@@ -72,21 +73,6 @@ import qualified Data.Generics          as SYB
 -- 4. Convert the Bindings to let statements, at the same time build up a description of the types
 --    to make the type descriptor helper.
 
--- | The plugin for circuit notation.
-plugin :: GHC.Plugin
-plugin = GHC.defaultPlugin
-  { GHC.parsedResultAction = \_cliOptions -> pluginImpl
-  }
-
--- | The actual implementation.
-pluginImpl :: GHC.ModSummary -> GHC.HsParsedModule -> GHC.Hsc GHC.HsParsedModule
-pluginImpl _modSummary m = do
-    -- dflags <- GHC.getDynFlags
-    -- debug $ GHC.showPpr dflags (GHC.hpm_module m)
-    hpm_module' <- transform (GHC.hpm_module m)
-    let module' = m { GHC.hpm_module = hpm_module' }
-    return module'
-
 -- Names ---------------------------------------------------------------
 
 constructorName, circuitTypeName, runCircuitName :: String
@@ -106,13 +92,6 @@ isDollar = \case
   HsVar _ (L _ v) -> v == GHC.mkVarUnqual "$"
   _               -> False
 
--- | Kinda hacky function to get a string name for named ports.
-fromRdrName :: GHC.RdrName -> GHC.FastString
-fromRdrName = \case
-  GHC.Unqual occName -> mkFastString (OccName.occNameString occName)
-  GHC.Orig _ occName -> mkFastString (OccName.occNameString occName)
-  nm -> mkFastString (deepShowD nm)
-
 imap :: (Int -> a -> b) -> [a] -> [b]
 imap f = zipWith f [0 ..]
 
@@ -125,37 +104,67 @@ data PortName = PortName SrcSpan GHC.FastString
 instance Show PortName where
   show (PortName _ fs) = GHC.unpackFS fs
 
+data PortDescription a = Tuple [PortDescription a]
+    | Vec [PortDescription a]
+    | Ref a
+    | Lazy (PortDescription a)
+    | SignalExpr (LHsExpr GhcPs)
+    | SignalPat (LPat GhcPs)
+    | PortType (LHsSigWcType GhcPs) (PortDescription a)
+    | PortErr SrcSpan Err.MsgDoc
+    deriving (Foldable, Functor, Traversable)
+
+instance L.Plated (PortDescription a) where
+  plate f = \case
+    Tuple ps -> Tuple <$> traverse f ps
+    Vec ps -> Vec <$> traverse f ps
+    Lazy p -> Lazy <$> f p
+    PortType t p -> PortType t <$> f p
+    p -> pure p
+
 -- | A single circuit binding. These are generated from parsing statements.
 -- @
 -- bOut <- bCircuit -< bIn
 -- @
 data Binding exp l = Binding
-  { bCircuit :: exp
-  , bOut     :: PortDescription l
-  , bIn      :: PortDescription l
-  } deriving (Functor)
+    { bCircuit :: exp
+    , bOut     :: PortDescription l
+    , bIn      :: PortDescription l
+    }
+    deriving (Functor)
 
 -- | A description of a circuit with internal let bindings.
 data CircuitQQ dec exp nm = CircuitQQ
-  { circuitQQSlaves  :: PortDescription nm
-  -- ^ the final statement in a circuit
-  , circuitQQTypes   :: [LSig GhcPs]
-  -- ^ type signatures in let bindings
-  , circuitQQLets    :: [dec]
-  -- ^ user defined let expression inside the circuit
-  , circuitQQBinds   :: [Binding exp nm]
-  -- ^ @out <- circuit <- in@ statements
-  , circuitQQMasters :: PortDescription nm
-  -- ^ ports bound at the first lambda of a circuit
-  } deriving (Functor)
+    { circuitQQSlaves  :: PortDescription nm
+    -- ^ the final statement in a circuit
+    , circuitQQTypes   :: [LSig GhcPs]
+    -- ^ type signatures in let bindings
+    , circuitQQLets    :: [dec]
+    -- ^ user defined let expression inside the circuit
+    , circuitQQBinds   :: [Binding exp nm]
+    -- ^ @out <- circuit <- in@ statements
+    , circuitQQMasters :: PortDescription nm
+    -- ^ ports bound at the first lambda of a circuit
+    }
+    deriving (Functor)
 
-newtype CircuitState = CircuitState
-  { cErrors :: Bag Err.ErrMsg
-  }
+data CircuitState dec exp nm = CircuitState
+    { _cErrors      :: Bag Err.ErrMsg
+    , _counter      :: Int
+    -- ^ unique counter for generated variables
+    , _circuitTypes :: [LSig GhcPs]
+    -- ^ type signatures in let bindings
+    , _circuitLets  :: [dec]
+    -- ^ user defined let expression inside the circuit
+    , _circuitBinds :: [Binding exp nm]
+    -- ^ @out <- circuit <- in@ statements
+    }
+
+L.makeLenses 'CircuitState
 
 -- | The monad used when running a single circuit.
-newtype CircuitM a = CircuitM (StateT CircuitState GHC.Hsc a)
-  deriving (Functor, Applicative, Monad, MonadIO, MonadState CircuitState)
+newtype CircuitM a = CircuitM (StateT (CircuitState (LHsBind GhcPs) (LHsExpr GhcPs) PortName) GHC.Hsc a)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadState (CircuitState (LHsBind GhcPs) (LHsExpr GhcPs) PortName))
 
 instance GHC.HasDynFlags CircuitM where
   getDynFlags = (CircuitM . lift) GHC.getDynFlags
@@ -163,10 +172,14 @@ instance GHC.HasDynFlags CircuitM where
 runCircuitM :: CircuitM a -> GHC.Hsc a
 runCircuitM (CircuitM m) = do
   let emptyCircuitState = CircuitState
-        { cErrors = emptyBag
+        { _cErrors = emptyBag
+        , _counter = 0
+        , _circuitTypes = []
+        , _circuitLets = []
+        , _circuitBinds = []
         }
   (a, s) <- runStateT m emptyCircuitState
-  let errs = cErrors s
+  let errs = _cErrors s
   unless (isEmptyBag errs) $ liftIO . throwIO $ GHC.mkSrcErr errs
   pure a
 
@@ -177,24 +190,11 @@ err loc msg = do
   pure $
     Err.mkErrMsg dflags loc Outputable.alwaysQualify errMsg
 
-data PortDescription a
-  = Tuple [PortDescription a]
-  | Vec [PortDescription a]
-  | Ref a
-  | Lazy (PortDescription a)
-  | SignalExpr (LHsExpr GhcPs)
-  | SignalPat (LPat GhcPs)
-  | PortType (LHsSigWcType GhcPs) (PortDescription a)
-  | PortErr SrcSpan Err.MsgDoc
-  deriving (Foldable, Functor, Traversable)
-
-instance L.Plated (PortDescription a) where
-  plate f = \case
-    Tuple ps -> Tuple <$> traverse f ps
-    Vec ps -> Vec <$> traverse f ps
-    Lazy p -> Lazy <$> f p
-    PortType t p -> PortType t <$> f p
-    p -> pure p
+errM :: SrcSpan -> String -> CircuitM ()
+errM loc msg = do
+  dflags <- GHC.getDynFlags
+  let errMsg = Err.mkLocMessageAnn Nothing Err.SevFatal loc (Outputable.text msg)
+  cErrors %= consBag (Err.mkErrMsg dflags loc Outputable.alwaysQualify errMsg)
 
 -- ghc helpers ---------------------------------------------------------
 
@@ -308,6 +308,12 @@ lamE pats expr = noLoc $ HsLam NoExt mg
     grHs :: LGRHS GhcPs (LHsExpr GhcPs)
     grHs = noLoc $ GRHS NoExt [] expr
 
+-- | Kinda hacky function to get a string name for named ports.
+fromRdrName :: GHC.RdrName -> GHC.FastString
+fromRdrName = \case
+  GHC.Unqual occName -> mkFastString (OccName.occNameString occName)
+  GHC.Orig _ occName -> mkFastString (OccName.occNameString occName)
+  nm -> mkFastString (deepShowD nm)
 
 -- Parsing -------------------------------------------------------------
 
@@ -345,7 +351,10 @@ circuitBody slaves = \case
         L finLoc stmt ->
           throwOneError =<< err finLoc ("unhandled final stmt " <> show (Data.toConstr stmt))
 
-    (sigs, lets, bindings) <- handleStmts stmts
+    mapM_ handleStmtM stmts
+    sigs <- L.use circuitTypes
+    lets <- L.use circuitLets
+    bindings <- L.use circuitBinds
 
     pure CircuitQQ
       { circuitQQSlaves = slaves
@@ -366,31 +375,24 @@ circuitBody slaves = \case
       , circuitQQMasters = masters
       }
 
--- | Converts the statements of a circuit do block to either let bindings or port bindings.
-handleStmts
-  :: (p ~ GhcPs)
-  => [ExprLStmt p]
-  -> CircuitM ([LSig p], [LHsBind p], [Binding (LHsExpr p) PortName])
-handleStmts stmts = do
-  let (localBinds, bindings) = partitionEithers $ map (handleStmt . unL) stmts
-  sigBinds <- forM localBinds $ \case
-    L _ (HsValBinds _ (ValBinds _ valBinds sigs)) -> pure (sigs, bagToList valBinds)
-    L loc stmt -> throwOneError =<< err loc ("unhandled statement" <> show (Data.toConstr stmt))
-
-  let (sigs, binds) = unzip sigBinds
-
-  pure (concat sigs, concat binds, bindings)
-
 -- | Handle a single statement.
-handleStmt
-  :: (p ~ GhcPs, loc ~ SrcSpan, idL ~ GhcPs)
-  => StmtLR idL idR (LHsExpr p)
-  -> Either (LHsLocalBindsLR idL idR) (Binding (LHsExpr p) PortName)
-handleStmt = \case
-  LetStmt _xlet letBind -> Left letBind
-  BodyStmt _xbody body _idr _idr' -> Right (bodyBinding Nothing body)
-  BindStmt _xbody bind body _idr _idr' -> Right (bodyBinding (Just $ bindSlave bind) body)
-  _ -> error "Unhandled stmt"
+handleStmtM
+  :: (p ~ GhcPs, loc ~ SrcSpan, idL ~ GhcPs, idR ~ GhcPs)
+  => Located (StmtLR idL idR (LHsExpr p))
+  -> CircuitM ()
+handleStmtM (L loc stmt) = case stmt of
+  LetStmt _xlet (L _ letBind) ->
+    -- a regular let bindings
+    case letBind of
+      HsValBinds _ (ValBinds _ valBinds sigs) -> do
+        circuitLets <>= bagToList valBinds
+        circuitTypes <>= sigs
+      _ -> errM loc ("Unhandled let statement" <> show (Data.toConstr letBind))
+  BodyStmt _xbody body _idr _idr' ->
+    circuitBinds <>= [bodyBinding Nothing body]
+  BindStmt _xbody bind body _idr _idr' ->
+    circuitBinds <>= [bodyBinding (Just $ bindSlave bind) body]
+  _ -> errM loc "Unhandled stmt"
 
 -- | Turn patterns to the left of a @<-@ into a PortDescription.
 bindSlave :: p ~ GhcPs => LPat p -> PortDescription PortName
@@ -753,6 +755,22 @@ transform = SYB.everywhereM (SYB.mkM transform') where
         runCircuitM $ parseCircuit appR >>= circuitQQExpM
 
   transform' e = pure e
+
+-- | The plugin for circuit notation.
+plugin :: GHC.Plugin
+plugin = GHC.defaultPlugin
+  { GHC.parsedResultAction = \_cliOptions -> pluginImpl
+  }
+
+-- | The actual implementation.
+pluginImpl :: GHC.ModSummary -> GHC.HsParsedModule -> GHC.Hsc GHC.HsParsedModule
+pluginImpl _modSummary m = do
+    -- dflags <- GHC.getDynFlags
+    -- debug $ GHC.showPpr dflags (GHC.hpm_module m)
+    hpm_module' <- transform (GHC.hpm_module m)
+    let module' = m { GHC.hpm_module = hpm_module' }
+    return module'
+
 
 -- Debugging functions -------------------------------------------------
 
