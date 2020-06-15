@@ -68,6 +68,11 @@ vec0 = circuit \[] -> ()
 vec00 :: Circuit (Vec 0 a) (Vec 0 a)
 vec00 = circuit \[] -> []
 
+sigPat :: Circuit (Signal Int) (Signal Int)
+sigPat = circuit $ \(Signal a) -> do
+  i <- (idC :: Circuit (Signal Int) (Signal Int)) -< Signal a
+  idC -< i
+
 -- unfstC2 :: Circuit (DF a) (DF a, DF b)
 -- unfstC2 = let
 --   inferenceHelper ::

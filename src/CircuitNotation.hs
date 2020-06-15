@@ -227,7 +227,7 @@ tupT :: p ~ GhcPs => [LHsType p] -> LHsType p
 tupT tys = noLoc $ HsTupleTy NoExt HsBoxedTuple tys
 
 vecT :: p ~ GhcPs => SrcSpan -> [LHsType p] -> LHsType p
-vecT s [] = L s $ HsParTy NoExt (conT s "Vec" `appTy` tyNum s 0 `appTy` (varT s "vec0a"))
+vecT s [] = L s $ HsParTy NoExt (conT s "Vec" `appTy` tyNum s 0 `appTy` (varT s (genLocName s "vec")))
 vecT s tys = L s $ HsParTy NoExt (conT s "Vec" `appTy` tyNum s (length tys) `appTy` head tys)
 
 tyNum :: p ~ GhcPs => SrcSpan -> Int -> LHsType p
@@ -284,9 +284,14 @@ portTypeSig dflags = \case
     Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "portTypeSig") msgdoc
   Lazy _ p -> portTypeSig dflags p
   -- TODO make the 'a' unique
-  SignalExpr (L l _) -> L l $ HsAppTy NoExt (conT l "Signal") (varT l "a")
-  SignalPat (L l _) -> L l $ HsAppTy NoExt (conT l "Signal") (varT l "a")
+  SignalExpr (L l _) -> L l $ HsAppTy NoExt (conT l "Signal") (varT l (genLocName l "sig"))
+  SignalPat (L l _) -> L l $ HsAppTy NoExt (conT l "Signal") (varT l (genLocName l "sig"))
   PortType _ p -> portTypeSig dflags p
+
+genLocName :: SrcSpan -> String -> String
+genLocName (GHC.RealSrcSpan rss) prefix = prefix <> "_" <>
+  foldMap (\f -> show (f rss)) [srcSpanStartLine, srcSpanEndLine, srcSpanStartCol, srcSpanEndCol]
+genLocName _ prefix = prefix
 
 -- | Extract a simple lambda into inputs and body.
 simpleLambda :: HsExpr p -> Maybe ([LPat p], LHsExpr p)
@@ -678,11 +683,12 @@ circuitQQExpM = do
           (varE noSrcSpan (var "f") `appE` tupE noSrcSpan (replicate numBinds (runCircuitFun noSrcSpan))))
       runCircuitBinds = tupP $ map (\i -> varP noSrcSpan ("run" <> show i)) [0 .. numBinds-1]
 
-  -- ppr
-  pure $ letE noSrcSpan
-    [noLoc inferenceHelperTy]
-    [noLoc $ patBind (varP noSrcSpan "inferenceHelper") (runCircuitExprs)]
-    (varE noSrcSpan (var "inferenceHelper") `appE` lamE [runCircuitBinds, pats] body)
+  let c = letE noSrcSpan
+            [noLoc inferenceHelperTy]
+            [noLoc $ patBind (varP noSrcSpan "inferenceHelper") (runCircuitExprs)]
+            (varE noSrcSpan (var "inferenceHelper") `appE` lamE [runCircuitBinds, pats] body)
+  ppr c
+  pure c
 
   -- pure $ varE noSrcSpan (var "undefined")
 
