@@ -687,7 +687,7 @@ circuitQQExpM = do
             [noLoc inferenceHelperTy]
             [noLoc $ patBind (varP noSrcSpan "inferenceHelper") (runCircuitExprs)]
             (varE noSrcSpan (var "inferenceHelper") `appE` lamE [runCircuitBinds, pats] body)
-  ppr c
+  -- ppr c
   pure c
 
   -- pure $ varE noSrcSpan (var "undefined")

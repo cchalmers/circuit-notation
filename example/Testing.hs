@@ -59,8 +59,11 @@ import           Circuit
 -- swapC :: Circuit (a,b) (b,a)
 -- swapC = circuit $ \(a,b) -> (b,a)
 
-vecC :: Circuit (Vec 2 a) (a, a)
-vecC = circuit \[x,y] -> (x, y)
+unvecC :: Circuit (Vec 2 a) (a, a)
+unvecC = circuit \[x,y] -> (x, y)
+
+vecC :: Circuit (a, a) (Vec 2 a)
+vecC = circuit \(x, y) -> [x,y]
 
 vec0 :: Circuit (Vec 0 a) ()
 vec0 = circuit \[] -> ()
