@@ -33,7 +33,7 @@ import           Control.Monad.IO.Class (MonadIO (..))
 import qualified Data.Data              as Data
 import           Data.Default
 import           Data.Maybe             (fromMaybe)
-import           Debug.Trace
+-- import           Debug.Trace
 import           SrcLoc
 import           System.IO.Unsafe
 
@@ -750,25 +750,25 @@ transform
     -> GHC.Hsc (GHC.Located (HsModule GhcPs))
 transform = SYB.everywhereM (SYB.mkM transform') where
   transform' :: LHsExpr GhcPs -> GHC.Hsc (LHsExpr GhcPs)
-  transform' e@(L _ (HsLet _xlet (L _ (HsValBinds _ (ValBinds _ _ sigs))) _lappB)) =
---  -- --                debug $ show i ++ " ==> " ++ SYB.gshow stmt
-    -- trace (show (SYB.gshow <$> sigs)) pure e
-    -- trace (show (( \ (TypeSig _ ids ty) -> show (deepShowD <$> ids) <> " " <> deepShowD ty) . unL <$> sigs)) pure e
-    case sigs of
-      [L _ (TypeSig _ [L _ x] y)] -> do
-        -- dflags <- GHC.getDynFlags
-        let pp :: GHC.Outputable a => a -> String
-            pp = const "" -- GHC.showPpr dflags
-        case y of
-          HsWC _ (HsIB _ (L _ (HsTyVar _ _ (L _ (GHC.Unqual occ))))) -> do
-            grr (OccName.occNameSpace occ)
-          HsWC _ (HsIB _ (L _ (HsQualTy _ (L _ [L _ (HsOpTy NoExt _ (L _ (GHC.Orig m nm)) _)]) _))) -> do
-            grr $ OccName.occNameSpace nm
-            traceM (pp m)
-          _ -> pure () -- error "nope"
-        trace (pp x) trace (SYB.gshow y) pure e
-        -- error "fin"
-      _ -> pure e
+  -- transform' e@(L _ (HsLet _xlet (L _ (HsValBinds _ (ValBinds _ _ sigs))) _lappB)) =
+-- --  -- --                debug $ show i ++ " ==> " ++ SYB.gshow stmt
+  --   -- trace (show (SYB.gshow <$> sigs)) pure e
+  --   -- trace (show (( \ (TypeSig _ ids ty) -> show (deepShowD <$> ids) <> " " <> deepShowD ty) . unL <$> sigs)) pure e
+  --   case sigs of
+  --     [L _ (TypeSig _ [L _ x] y)] -> do
+  --       -- dflags <- GHC.getDynFlags
+  --       let pp :: GHC.Outputable a => a -> String
+  --           pp = const "" -- GHC.showPpr dflags
+  --       case y of
+  --         HsWC _ (HsIB _ (L _ (HsTyVar _ _ (L _ (GHC.Unqual occ))))) -> do
+  --           grr (OccName.occNameSpace occ)
+  --         HsWC _ (HsIB _ (L _ (HsQualTy _ (L _ [L _ (HsOpTy NoExt _ (L _ (GHC.Orig m nm)) _)]) _))) -> do
+  --           grr $ OccName.occNameSpace nm
+  --           traceM (pp m)
+  --         _ -> pure () -- error "nope"
+  --       trace (pp x) trace (SYB.gshow y) pure e
+  --       -- error "fin"
+  --     _ -> pure e
 
   -- the circuit keyword directly applied (either with parenthesis or with BlockArguments)
   transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
