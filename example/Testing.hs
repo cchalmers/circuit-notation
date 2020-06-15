@@ -18,7 +18,7 @@ For testing the circuit notation.
 {-# LANGUAGE DataKinds       #-}
 
 -- For testing:
--- {-# LANGUAGE ScopedTypeVariables  #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
 
 {-# OPTIONS -fplugin=CircuitNotation #-}
 {-# OPTIONS -Wno-unused-local-binds #-}
@@ -27,6 +27,7 @@ For testing the circuit notation.
 module Example where
 
 import           Circuit
+-- import Data.Default
 
 -- no c =
 --   let
@@ -52,13 +53,50 @@ import           Circuit
 --   b' <- c -< b
 --   idC -< (b',a')
 
-fstC :: Circuit (Signal a, Signal b) (Signal a)
-fstC = circuit $ \(a, _b) -> a
+-- fstC :: Circuit (Signal a, Signal b) (Signal a)
+-- fstC = circuit $ \(a, _b) -> a
 
 -- swapC :: Circuit (a,b) (b,a)
 -- swapC = circuit $ \(a,b) -> (b,a)
 
 vecC :: Circuit (Vec 2 a) (a, a)
--- vecC = circuit \[x,y] -> (x,y)
-vecC = Circuit \ (Cons x_M2S (Cons y_M2S Nil), (x_S2M, y_S2M))
-                        -> ((x_M2S, y_M2S), Cons x_S2M (Cons y_S2M (Nil)))
+vecC = circuit \[x,y] -> (x, y)
+
+vec0 :: Circuit (Vec 0 a) ()
+vec0 = circuit \[] -> ()
+
+vec00 :: Circuit (Vec 0 a) (Vec 0 a)
+vec00 = circuit \[] -> []
+
+-- unfstC2 :: Circuit (DF a) (DF a, DF b)
+-- unfstC2 = let
+--   inferenceHelper ::
+--     ( (Circuit (aTy, _bTy) abTy -> CircuitT (aTy, _bTy) abTy)
+--        -> CircuitT aTy abTy
+--     ) -> Circuit aTy abTy
+--   inferenceHelper = \f -> Circuit (f runCircuit)
+--   in inferenceHelper \run0 (a_M2S, ab_S2M)
+--           -> let
+--                def_ = def
+--                (ab_M2S, (a_S2M, _b_S2M)) = run0 idC ((a_M2S, def_), ab_S2M)
+--              in (ab_M2S, a_S2M)
+
+  -- inferenceHelper ::
+  --   (CircuitT aTy abTy -> Circuit aTy abTy,
+  --    Circuit (aTy, _bTy) abTy -> CircuitT (aTy, _bTy) abTy)
+  -- inferenceHelper = (Circuit, runCircuit)
+  -- (mkCircuit, run0) = inferenceHelper
+  -- in mkCircuit
+  --       \ (a_M2S, ab_S2M)
+  --         -> let
+  --              (ab_M2S, (a_S2M, _b_S2M)) = run0 idC ((a_M2S, def), ab_S2M)
+  --            in (ab_M2S, a_S2M)
+
+unfstC2 :: Circuit (DF a) (DF a, DF b)
+unfstC2 = circuit $ \a -> do
+  ab <- idC -< (a, _b)
+  ab' <- idC -< ab
+  idC -< ab'
+
+-- vecC = Circuit \ (Cons x_M2S (Cons y_M2S Nil), (x_S2M, y_S2M))
+--                         -> ((x_M2S, y_M2S), Cons x_S2M (Cons y_S2M (Nil)))
