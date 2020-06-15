@@ -606,6 +606,17 @@ mkRunCircuitTy a b =
     HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan circuitTypeName) a) b
     )
 
+-- a b -> (CircuitT a b -> Circuit a b)
+mkCircuitTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
+mkCircuitTy a b =
+  noLoc $ HsFunTy noExt
+  (noLoc $
+    HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan circuitTypeName) a) b
+    )
+  ( noLoc $
+    HsAppTy NoExt (noLoc $ HsAppTy NoExt (conT noSrcSpan constructorName) a) b
+    )
+
 -- | Creates a (tuple of) run circuit types the used for the bindings.
 bindRunCircuitTypes
   :: p ~ GhcPs
@@ -658,7 +669,7 @@ circuitQQExpM = do
 
       body :: LHsExpr GhcPs
       body = letE noSrcSpan [] decs res
-  let cir = circuitConstructor noSrcSpan `appE` lamE [pats] body
+  let cir = varE noSrcSpan (var "mkCircuit") `appE` lamE [pats] body
 
   -- The inference helper is a basically a tuple of `runCircuit`s with a type signature that matches
   -- the structure of the circuit notation. The first argument of the helper is the final circuit so
@@ -680,14 +691,26 @@ circuitQQExpM = do
   -- inferenceHelper = const (runCircuit, runCircuit)
 
   let -- the plain signature of the function without a context
-      runCircuitsType =
-        noLoc $ HsFunTy noExt
-          (noLoc $ HsAppTy NoExt topLevelCircuitTy b)
-          (bindRunCircuitTypes dflags binds)
-        where
-          a = portTypeSig dflags slaves
-          topLevelCircuitTy = noLoc $ HsAppTy NoExt (conT noSrcSpan constructorName) a
-          b = portTypeSig dflags masters
+      -- slaveTypes = portTypeSig dflags slaves
+-- mkCircuitTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
+      topLevelCircuitTy = mkCircuitTy (portTypeSig dflags slaves) (portTypeSig dflags masters)
+      runCircuitsType = tupT (topLevelCircuitTy : map mkRunTy binds)
+      mkRunTy bind =
+        mkRunCircuitTy
+          (portTypeSig dflags (bOut bind))
+          (portTypeSig dflags (bIn bind))
+
+-- bindRunCircuitTypes dflags binds = tupT (map mkTy binds)
+--   where
+--     mkTy bind = mkRunCircuitTy a b
+--       where
+--         a = portTypeSig dflags (bOut bind)
+--         b = portTypeSig dflags (bIn bind)
+
+--         where
+--           a = portTypeSig dflags slaves
+--           topLevelCircuitTy = noLoc $ HsAppTy NoExt (conT noSrcSpan constructorName) a
+--           b = portTypeSig dflags masters
 
       -- the context from type signatures added to ports
       allTypes = getTypeAnnots slaves <> getTypeAnnots masters
@@ -703,20 +726,29 @@ circuitQQExpM = do
 
   let numBinds = length binds
       runCircuitExprs =
-        tupE noSrcSpan $ replicate numBinds (runCircuitFun noSrcSpan)
-      runCircuitBinds = tupP $ map (\i -> varP noSrcSpan ("run" <> show i)) [0 .. numBinds-1]
+        tupE noSrcSpan $ circuitConstructor noSrcSpan : replicate numBinds (runCircuitFun noSrcSpan)
+      runCircuitBinds = tupP $ varP noSrcSpan "mkCircuit" : map (\i -> varP noSrcSpan ("run" <> show i)) [0 .. numBinds-1]
 
 
-  pure $ letE noSrcSpan (if numBinds == 0 then [] else [noLoc inferenceHelperTy])
-    ( [ noLoc $ patBind (varP noSrcSpan "cir") cir
-    ] <> if numBinds == 0 then [] else [
-      noLoc $ patBind (varP noSrcSpan "inferenceHelper")
-                      (constVar noSrcSpan `appE` runCircuitExprs)
-    , noLoc $ patBind runCircuitBinds
-                 ((varE noSrcSpan (var "inferenceHelper")) `appE`
-                     (varE noSrcSpan (var "cir")))
-    ])
+  pure $ letE noSrcSpan
+    [noLoc inferenceHelperTy]
+    [ noLoc $ patBind (varP noSrcSpan "inferenceHelper") (runCircuitExprs)
+    , noLoc $ patBind runCircuitBinds (varE noSrcSpan (var "inferenceHelper"))
+    , noLoc $ patBind (varP noSrcSpan "cir") cir
+    ]
     (varE noSrcSpan (var "cir"))
+
+  -- pure $ letE noSrcSpan (if numBinds == 0 then [] else [noLoc inferenceHelperTy])
+  --   ( [ noLoc $ patBind (varP noSrcSpan "cir") cir ]
+  --   <> if numBinds == 0 then [] else
+  --   [
+  --     noLoc $ patBind (varP noSrcSpan "inferenceHelper")
+  --                     (constVar noSrcSpan `appE` runCircuitExprs)
+  --   , noLoc $ patBind runCircuitBinds
+  --                ((varE noSrcSpan (var "inferenceHelper")) `appE`
+  --                    (varE noSrcSpan (var "cir")))
+  --   ])
+  --   (varE noSrcSpan (var "cir"))
 
 grr :: MonadIO m => OccName.NameSpace -> m ()
 grr nm
