@@ -71,9 +71,9 @@ vec0 = circuit \[] -> ()
 vec00 :: Circuit (Vec 0 a) (Vec 0 a)
 vec00 = circuit \[] -> []
 
-sigPat :: Circuit (Signal Int) (Signal Int)
+sigPat :: Circuit (Signal dom Int) (Signal dom Int)
 sigPat = circuit $ \(Signal a) -> do
-  i <- (idC :: Circuit (Signal Int) (Signal Int)) -< Signal a
+  i <- (idC :: Circuit (Signal dom Int) (Signal dom Int)) -< Signal a
   idC -< i
 
 -- unfstC2 :: Circuit (DF a) (DF a, DF b)
@@ -100,7 +100,7 @@ sigPat = circuit $ \(Signal a) -> do
   --              (ab_M2S, (a_S2M, _b_S2M)) = run0 idC ((a_M2S, def), ab_S2M)
   --            in (ab_M2S, a_S2M)
 
-unfstC2 :: Circuit (DF a) (DF a, DF b)
+unfstC2 :: Circuit (DF dom a) (DF dom a, DF dom b)
 unfstC2 = circuit $ \a -> do
   ab <- idC -< (a, _b)
   ab' <- idC -< ab

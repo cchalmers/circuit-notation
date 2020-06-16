@@ -284,8 +284,8 @@ portTypeSig dflags = \case
     Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "portTypeSig") msgdoc
   Lazy _ p -> portTypeSig dflags p
   -- TODO make the 'a' unique
-  SignalExpr (L l _) -> L l $ HsAppTy NoExt (conT l "Signal") (varT l (genLocName l "sig"))
-  SignalPat (L l _) -> L l $ HsAppTy NoExt (conT l "Signal") (varT l (genLocName l "sig"))
+  SignalExpr (L l _) -> (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l "sig"))
+  SignalPat (L l _) -> (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l "sig"))
   PortType _ p -> portTypeSig dflags p
 
 genLocName :: SrcSpan -> String -> String
