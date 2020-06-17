@@ -665,7 +665,12 @@ circuitQQExpM = do
           `arrTy` circuitTy slavesTy mastersTy
 
       -- the context from type signatures added to ports
-      allTypes = getTypeAnnots slaves <> getTypeAnnots masters
+      bindAnnots =
+        foldMap
+          (\(Binding _ outs ins) -> getTypeAnnots outs <> getTypeAnnots ins)
+          binds
+
+      allTypes = getTypeAnnots slaves <> getTypeAnnots masters <> bindAnnots
       context = map (\(ty, p) -> tyEq noSrcSpan (portTypeSig dflags p) (HsTypes.hsSigWcType ty)) allTypes
 
       -- the full signature
