@@ -21,6 +21,7 @@ library
       base >=4.12
     , ghc >=8.6
     , syb
+    , containers
     , lens
     , mtl
     , pretty

@@ -33,7 +33,6 @@ import           Control.Monad.IO.Class (MonadIO (..))
 import qualified Data.Data              as Data
 import           Data.Default
 import           Data.Maybe             (fromMaybe)
--- import           Debug.Trace
 import           SrcLoc
 import           System.IO.Unsafe
 
@@ -52,13 +51,16 @@ import qualified OccName
 import qualified Outputable
 import           PrelNames              (eqTyCon_RDR)
 
+-- containers
+import Data.Map (Map)
+import qualified Data.Map as Map
+
 -- lens
 import qualified Control.Lens           as L
 import           Control.Lens.Operators
 
 -- mtl
 import           Control.Monad.State
-import           Control.Monad.Writer
 
 -- pretty-show
 -- import qualified Text.Show.Pretty       as SP
@@ -103,6 +105,7 @@ imap f = zipWith f [0 ..]
 -- | The name given to a 'port', i.e. the name of a variable either to the left of a '<-' or to the
 --   right of a '-<'.
 data PortName = PortName SrcSpan GHC.FastString
+  deriving (Eq, Ord)
 
 instance Show PortName where
   show (PortName _ fs) = GHC.unpackFS fs
@@ -150,6 +153,10 @@ data CircuitState dec exp nm = CircuitState
     -- ^ @out <- circuit <- in@ statements
     , _circuitMasters :: PortDescription nm
     -- ^ ports bound at the first lambda of a circuit
+    , _portVarTypes :: Map GHC.FastString (SrcSpan, LHsType GhcPs)
+    -- ^ types of single variable ports
+    , _portTypes :: [(LHsSigWcType GhcPs, PortDescription nm)]
+    -- ^ type of more 'complicated' things (very far from vigorous)
     }
 
 L.makeLenses 'CircuitState
@@ -171,6 +178,8 @@ runCircuitM (CircuitM m) = do
         , _circuitLets = []
         , _circuitBinds = []
         , _circuitMasters = Tuple []
+        , _portVarTypes = Map.empty
+        , _portTypes = []
         }
   (a, s) <- runStateT m emptyCircuitState
   let errs = _cErrors s
@@ -260,18 +269,23 @@ thName nm =
     [name] -> name
     _      -> error "thName called on a non NameG Name"
 
-portTypeSig :: p ~ GhcPs => GHC.DynFlags -> PortDescription PortName -> LHsType p
-portTypeSig dflags = \case
-  Tuple ps -> tupT $ fmap (portTypeSig dflags) ps
-  Vec s ps -> vecT s $ fmap (portTypeSig dflags) ps
-  Ref (PortName loc fs) -> varT loc (GHC.unpackFS fs <> "Ty")
-  PortErr loc msgdoc -> unsafePerformIO . throwOneError $
-    Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "portTypeSig") msgdoc
-  Lazy _ p -> portTypeSig dflags p
-  -- TODO make the 'a' unique
-  SignalExpr (L l _) -> (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l "sig"))
-  SignalPat (L l _) -> (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l "sig"))
-  PortType _ p -> portTypeSig dflags p
+portTypeSigM :: p ~ GhcPs => PortDescription PortName -> CircuitM (LHsType p)
+portTypeSigM = \case
+  Tuple ps -> tupT <$> mapM portTypeSigM ps
+  Vec s ps -> vecT s <$> mapM portTypeSigM ps
+  Ref (PortName loc fs) -> do
+    L.use (portVarTypes . L.at fs) <&> \case
+      Nothing -> varT loc (GHC.unpackFS fs <> "Ty")
+      Just (_sigLoc, sig) -> sig
+  PortErr loc msgdoc -> do
+    dflags <- GHC.getDynFlags
+    unsafePerformIO . throwOneError $
+      Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "portTypeSig") msgdoc
+  Lazy _ p -> portTypeSigM p
+  -- -- TODO make the 'a' unique
+  SignalExpr (L l _) -> pure $ (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l "sig"))
+  SignalPat (L l _) -> pure $ (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l "sig"))
+  PortType _ p -> portTypeSigM p
 
 genLocName :: SrcSpan -> String -> String
 genLocName (GHC.RealSrcSpan rss) prefix = prefix <> "_" <>
@@ -598,14 +612,16 @@ mkRunCircuitTy a b = noLoc $ HsFunTy noExt (circuitTy a b) (circuitTTy a b)
 mkCircuitTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
 mkCircuitTy a b = noLoc $ HsFunTy noExt (circuitTTy a b) (circuitTy a b)
 
-getTypeAnnots
+-- perhaps this should happen on construction
+gatherTypes
   :: p ~ GhcPs
-  => PortDescription l
-  -> [(LHsSigWcType p, PortDescription l)]
-getTypeAnnots = execWriter . L.traverseOf_ L.cosmos addTypes
+  => PortDescription PortName
+  -> CircuitM ()
+gatherTypes = L.traverseOf_ L.cosmos addTypes
   where
     addTypes = \case
-      PortType ty p -> tell [(ty, p)]
+      PortType ty (Ref (PortName loc fs)) -> portVarTypes . L.at fs ?= (loc, hsSigWcType ty)
+      PortType ty p -> portTypes <>= [(ty, p)]
       _             -> pure ()
 
 tyEq :: p ~ GhcPs => SrcSpan -> LHsType p -> LHsType p -> LHsType p
@@ -639,27 +655,28 @@ circuitQQExpM = do
       body = letE noSrcSpan [] decs res
 
   -- see [inference-helper]
-  let slavesTy = portTypeSig dflags slaves
-      mastersTy = portTypeSig dflags masters
-      mkRunTy bind =
-        mkRunCircuitTy
-          (portTypeSig dflags (bOut bind))
-          (portTypeSig dflags (bIn bind))
-      runCircuitsType = 
-        noLoc (HsParTy NoExt (tupT (map mkRunTy binds) `arrTy` circuitTTy slavesTy mastersTy))
+  mapM_
+    (\(Binding _ outs ins) -> gatherTypes outs >> gatherTypes ins)
+    binds
+  mapM_ gatherTypes [masters, slaves]
+
+  slavesTy <- portTypeSigM slaves
+  mastersTy <- portTypeSigM masters
+  let mkRunTy bind =
+        mkRunCircuitTy <$>
+          (portTypeSigM (bOut bind)) <*>
+          (portTypeSigM (bIn bind))
+  bindTypes <- mapM mkRunTy binds
+  let runCircuitsType =
+        noLoc (HsParTy NoExt (tupT bindTypes `arrTy` circuitTTy slavesTy mastersTy))
           `arrTy` circuitTy slavesTy mastersTy
 
-      -- the context from type signatures added to ports
-      bindAnnots =
-        foldMap
-          (\(Binding _ outs ins) -> getTypeAnnots outs <> getTypeAnnots ins)
-          binds
+  allTypes <- L.use portTypes
 
-      allTypes = getTypeAnnots slaves <> getTypeAnnots masters <> bindAnnots
-      context = map (\(ty, p) -> tyEq noSrcSpan (portTypeSig dflags p) (HsTypes.hsSigWcType ty)) allTypes
+  context <- mapM (\(ty, p) -> tyEq noSrcSpan <$> (portTypeSigM p) <*> pure (HsTypes.hsSigWcType ty)) allTypes
 
       -- the full signature
-      inferenceSig :: LHsSigType GhcPs
+  let inferenceSig :: LHsSigType GhcPs
       inferenceSig = HsIB NoExt (noLoc $ HsQualTy NoExt (noLoc context) runCircuitsType)
       inferenceHelperTy =
         TypeSig NoExt
@@ -762,13 +779,14 @@ transform = SYB.everywhereM (SYB.mkM transform') where
 
   -- the circuit keyword directly applied (either with parenthesis or with BlockArguments)
   transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
-    | isCircuitVar circuitVar = runCircuitM $
+    | isCircuitVar circuitVar = runCircuitM $ do
         parseCircuit lappB >> completeUnderscores >> circuitQQExpM
 
   -- `circuit $` application
   transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
-    | isCircuitVar circuitVar && isDollar infixVar =
-        runCircuitM $ parseCircuit appR >> completeUnderscores >> circuitQQExpM
+    | isCircuitVar circuitVar && isDollar infixVar = do
+        runCircuitM $ do
+          parseCircuit appR >> completeUnderscores >> circuitQQExpM
 
   transform' e = pure e
 

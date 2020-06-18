@@ -59,23 +59,6 @@ import           Circuit
 -- swapC :: Circuit (a,b) (b,a)
 -- swapC = circuit $ \(a,b) -> (b,a)
 
-unvecC :: Circuit (Vec 2 a) (a, a)
-unvecC = circuit \[x,y] -> (x, y)
-
-vecC :: Circuit (a, a) (Vec 2 a)
-vecC = circuit \(x, y) -> [x,y]
-
-vec0 :: Circuit (Vec 0 a) ()
-vec0 = circuit \[] -> ()
-
-vec00 :: Circuit (Vec 0 a) (Vec 0 a)
-vec00 = circuit \[] -> []
-
-sigPat :: Circuit (Signal dom Int) (Signal dom Int)
-sigPat = circuit $ \(Signal a) -> do
-  i <- (idC :: Circuit (Signal dom Int) (Signal dom Int)) -< Signal a
-  idC -< i
-
 -- unfstC2 :: Circuit (DF a) (DF a, DF b)
 -- unfstC2 = let
 --   inferenceHelper ::
@@ -100,11 +83,20 @@ sigPat = circuit $ \(Signal a) -> do
   --              (ab_M2S, (a_S2M, _b_S2M)) = run0 idC ((a_M2S, def), ab_S2M)
   --            in (ab_M2S, a_S2M)
 
-unfstC2 :: Circuit (DF dom a) (DF dom a, DF dom b)
-unfstC2 = circuit $ \a -> do
-  ab <- idC -< (a, _b)
-  ab' <- idC -< ab
-  idC -< ab'
+unsafeC :: Circuit a b
+unsafeC = undefined
+
+types1 :: Circuit a a
+types1 = circuit $ \a -> do
+  x :: Int <- unsafeC -< a
+  b <- unsafeC -< x
+  idC -< b
+
+-- unfstC2 :: Circuit (DF dom a) (DF dom a, DF dom b)
+-- unfstC2 = circuit $ \a -> do
+--   ab <- idC -< (a, _b)
+--   ab' <- idC -< ab
+--   idC -< ab'
 
 -- vecC = Circuit \ (Cons x_M2S (Cons y_M2S Nil), (x_S2M, y_S2M))
 --                         -> ((x_M2S, y_M2S), Cons x_S2M (Cons y_S2M (Nil)))

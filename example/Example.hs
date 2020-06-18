@@ -84,6 +84,30 @@ swapTest :: forall a b. Circuit (a,b) (b,a)
 -- swapTest = circuit $ \(a,b) -> (idCircuit :: Circuit (b, a) (b, a)) -< (b, a)
 swapTest = circuit $ \(a,b) -> do idC -< (b, a)
 
+unvecC :: Circuit (Vec 2 a) (a, a)
+unvecC = circuit \[x,y] -> (x, y)
+
+vecC :: Circuit (a, a) (Vec 2 a)
+vecC = circuit \(x, y) -> [x,y]
+
+vec0 :: Circuit (Vec 0 a) ()
+vec0 = circuit \[] -> ()
+
+vec00 :: Circuit (Vec 0 a) (Vec 0 a)
+vec00 = circuit \[] -> []
+
+sigPat :: Circuit (Signal dom Int) (Signal dom Int)
+sigPat = circuit $ \(Signal a) -> do
+  i <- (idC :: Circuit (Signal dom Int) (Signal dom Int)) -< Signal a
+  idC -< i
+
+unfstC2 :: Circuit (DF dom a) (DF dom a, DF dom b)
+unfstC2 = circuit $ \a -> do
+  ab <- idC -< (a, _b)
+  ab' <- idC -< ab
+  idC -< ab'
+
+
 -- myDesire :: Circuit Int Char
 -- myDesire = Circuit (\(aM2S,bS2M) -> let
 --   (aM2S', bS2M') = runCircuit myCircuit (aM2S, bS2M)
