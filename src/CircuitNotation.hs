@@ -136,21 +136,6 @@ data Binding exp l = Binding
     }
     deriving (Functor)
 
--- | A description of a circuit with internal let bindings.
-data CircuitQQ dec exp nm = CircuitQQ
-    { circuitQQSlaves  :: PortDescription nm
-    -- ^ the final statement in a circuit
-    , circuitQQTypes   :: [LSig GhcPs]
-    -- ^ type signatures in let bindings
-    , circuitQQLets    :: [dec]
-    -- ^ user defined let expression inside the circuit
-    , circuitQQBinds   :: [Binding exp nm]
-    -- ^ @out <- circuit <- in@ statements
-    , circuitQQMasters :: PortDescription nm
-    -- ^ ports bound at the first lambda of a circuit
-    }
-    deriving (Functor)
-
 data CircuitState dec exp nm = CircuitState
     { _cErrors        :: Bag Err.ErrMsg
     , _counter        :: Int
