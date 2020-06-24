@@ -15,6 +15,7 @@ This file contains examples of using the Circuit Notation.
 {-# LANGUAGE DeriveFunctor       #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
+{-# LANGUAGE DataKinds        #-}
 
 {-# OPTIONS -fplugin=CircuitNotation #-}
 
@@ -35,50 +36,62 @@ idCircuit = idC
 swapC :: Circuit (a,b) (b,a)
 swapC = circuit $ \(a,b) -> (b,a)
 
-circuitA :: Circuit () (DF Int)
+circuitA :: Circuit () (DF domain Int)
 circuitA = Circuit (const (pure (DFM2S True 3), ()))
 
-circuitB :: Circuit () (Signal Int)
+circuitB :: Circuit () (Signal domain Int)
 circuitB = Circuit (\_ -> (pure 3, ()))
 
-circuitC :: Circuit (Signal Int) (DF Int)
+circuitC :: Circuit (Signal domain Int) (DF domain Int)
 circuitC = Circuit (\(as,_) -> (DFM2S True <$> as, ()))
 
-noLambda :: Circuit () (DF Int)
+noLambda :: Circuit () (DF domain Int)
 noLambda = circuit $ do
   i <- circuitA
   idC -< i
 
-sigExpr :: Signal Int -> Circuit () (DF Int)
+sigExpr :: Signal domain Int -> Circuit () (DF domain Int)
 sigExpr sig = circuit do
   i <- circuitC -< Signal sig
   idC -< i
 
 -- sigPat :: (( Signal Int -> Signal Int ))
-sigPat :: Circuit (Signal Int) (Signal Int)
+sigPat :: Circuit (Signal domain Int) (Signal domain Int)
 sigPat = circuit $ \(Signal a) -> do
-  i <- (idC :: Circuit (Signal Int) (Signal Int)) -< Signal a
+  i <- (idC :: Circuit (Signal domain Int) (Signal domain Int)) -< Signal a
   idC -< i
 
-fstC :: Circuit (Signal a, Signal b) (Signal a)
+sigPat2 :: Circuit (Signal dom Int) (Signal dom Int)
+sigPat2 = circuit $ \(Signal a) -> do
+  i <- (idC :: Circuit (Signal dom Int) (Signal dom Int)) -< Signal a
+  idC -< i
+
+fstC :: Circuit (Signal domain a, Signal domain b) (Signal domain a)
 fstC = circuit $ \(a, _b) -> do idC -< a
 
-fstC2 :: Circuit (Signal a, Signal b) (Signal a)
+fstC2 :: Circuit (Signal domain a, Signal domain b) (Signal domain a)
 fstC2 = circuit $ \ab -> do
   (a, _b) <- idC -< ab
   idC -< a
 
-fstC3 :: Circuit (Signal a, Signal b) (Signal a)
+fstC3 :: Circuit (Signal domain a, Signal domain b) (Signal domain a)
 fstC3 = circuit \(a, _b) -> a
 
-unfstC :: Circuit (DF a) (DF a, DF b)
+unfstC :: Circuit (DF domain a) (DF domain a, DF domain b)
 unfstC = circuit $ \a -> do
   idC -< (a, _b)
 
-unfstC2 :: Circuit (DF a) (DF a, DF b)
+unfstC2 :: Circuit (DF domain a) (DF domain a, DF domain b)
 unfstC2 = circuit $ \a -> do
   ab <- idC -< (a, _b)
   idC -< ab
+
+unfstC3 :: Circuit (DF dom a) (DF dom a, DF dom b)
+unfstC3 = circuit $ \a -> do
+  ab <- idC -< (a, _b)
+  ab' <- idC -< ab
+  idC -< ab'
+
 
 swapTest :: forall a b. Circuit (a,b) (b,a)
 -- swapTest = circuit $ \(a,b) -> (idCircuit :: Circuit (b, a) (b, a)) -< (b, a)
@@ -95,17 +108,6 @@ vec0 = circuit \[] -> ()
 
 vec00 :: Circuit (Vec 0 a) (Vec 0 a)
 vec00 = circuit \[] -> []
-
-sigPat :: Circuit (Signal dom Int) (Signal dom Int)
-sigPat = circuit $ \(Signal a) -> do
-  i <- (idC :: Circuit (Signal dom Int) (Signal dom Int)) -< Signal a
-  idC -< i
-
-unfstC2 :: Circuit (DF dom a) (DF dom a, DF dom b)
-unfstC2 = circuit $ \a -> do
-  ab <- idC -< (a, _b)
-  ab' <- idC -< ab
-  idC -< ab'
 
 
 -- myDesire :: Circuit Int Char
