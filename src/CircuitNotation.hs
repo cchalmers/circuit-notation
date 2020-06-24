@@ -157,6 +157,8 @@ data CircuitState dec exp nm = CircuitState
     -- ^ types of single variable ports
     , _portTypes :: [(LHsSigWcType GhcPs, PortDescription nm)]
     -- ^ type of more 'complicated' things (very far from vigorous)
+    , _uniqueCounter :: Int
+    -- ^ counter to keep internal variables "unique"
     }
 
 L.makeLenses 'CircuitState
@@ -180,6 +182,7 @@ runCircuitM (CircuitM m) = do
         , _circuitMasters = Tuple []
         , _portVarTypes = Map.empty
         , _portTypes = []
+        , _uniqueCounter = 1
         }
   (a, s) <- runStateT m emptyCircuitState
   let errs = _cErrors s
@@ -283,8 +286,12 @@ portTypeSigM = \case
       Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "portTypeSig") msgdoc
   Lazy _ p -> portTypeSigM p
   -- -- TODO make the 'a' unique
-  SignalExpr (L l _) -> pure $ (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l "sig"))
-  SignalPat (L l _) -> pure $ (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l "sig"))
+  SignalExpr (L l _) -> do
+    n <- uniqueCounter <<+= 1
+    pure $ (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
+  SignalPat (L l _) -> do
+    n <- uniqueCounter <<+= 1
+    pure $ (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
   PortType _ p -> portTypeSigM p
 
 genLocName :: SrcSpan -> String -> String
