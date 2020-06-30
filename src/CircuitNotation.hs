@@ -536,8 +536,8 @@ bindOutputs dflags slaves masters = tupP [m2s, s2m]
   -- super hacky: at this point we can generate names not possible in
   -- normal haskell (i.e. with spaces or colons). This is used to
   -- emulate non-captuable names.
-  m2s = bindWithSuffix dflags ":M2S" masters
-  s2m = bindWithSuffix dflags ":S2M" slaves
+  m2s = bindWithSuffix dflags "_M2S" masters
+  s2m = bindWithSuffix dflags "_S2M" slaves
 
 expWithSuffix :: p ~ GhcPs => String -> PortDescription PortName -> LHsExpr p
 expWithSuffix suffix = \case
@@ -560,8 +560,8 @@ createInputs
   -> LHsExpr p
 createInputs slaves masters = tupE noSrcSpan [m2s, s2m]
   where
-  m2s = expWithSuffix ":M2S" masters
-  s2m = expWithSuffix ":S2M" slaves
+  m2s = expWithSuffix "_M2S" masters
+  s2m = expWithSuffix "_S2M" slaves
 
 decFromBinding :: p ~ GhcPs => GHC.DynFlags -> Int -> Binding (LHsExpr p) PortName -> HsBind p
 decFromBinding dflags i Binding {..} = do
@@ -752,8 +752,8 @@ completeUnderscores = do
         _ -> pure ()
       addBind :: Binding exp PortName -> CircuitM ()
       addBind (Binding _ bOut bIn) = do
-        L.traverseOf_ L.cosmos (addDef ":M2S") bOut
-        L.traverseOf_ L.cosmos (addDef ":S2M") bIn
+        L.traverseOf_ L.cosmos (addDef "_M2S") bOut
+        L.traverseOf_ L.cosmos (addDef "_S2M") bIn
   mapM_ addBind binds
   addBind (Binding undefined masters slaves)
 
