@@ -110,7 +110,8 @@ data PortName = PortName SrcSpan GHC.FastString
 instance Show PortName where
   show (PortName _ fs) = GHC.unpackFS fs
 
-data PortDescription a = Tuple [PortDescription a]
+data PortDescription a
+    = Tuple [PortDescription a]
     | Vec SrcSpan [PortDescription a]
     | Ref a
     | Lazy SrcSpan (PortDescription a)
@@ -119,6 +120,9 @@ data PortDescription a = Tuple [PortDescription a]
     | PortType (LHsSigWcType GhcPs) (PortDescription a)
     | PortErr SrcSpan Err.MsgDoc
     deriving (Foldable, Functor, Traversable)
+
+_Ref :: L.Prism' (PortDescription a) a
+_Ref = L.prism' Ref (\case Ref a -> Just a; _ -> Nothing)
 
 instance L.Plated (PortDescription a) where
   plate f = \case
@@ -506,8 +510,35 @@ bodyBinding mInput lexpr@(L _loc expr) =
 
 -- Checking ------------------------------------------------------------
 
+data Dir = Slave | Master
+
 checkCircuit :: p ~ GhcPs => CircuitM ()
-checkCircuit = pure ()
+checkCircuit = do
+  slaves <- L.use circuitSlaves
+  masters <- L.use circuitMasters
+  binds <- L.use circuitBinds
+
+  let portNames d = L.toListOf (L.cosmos . _Ref . L.to (f d))
+      f :: Dir -> PortName -> (GHC.FastString, ([SrcSpan], [SrcSpan]))
+      f Slave (PortName srcLoc portName) = (portName, ([srcLoc], []))
+      f Master (PortName srcLoc portName) = (portName, ([], [srcLoc]))
+      bindingNames = \b -> portNames Master (bOut b) <> portNames Slave (bIn b)
+      topNames = portNames Slave slaves <> portNames Master masters
+      nameMap = Map.fromListWith mappend $ topNames <> concatMap bindingNames binds
+
+  L.iforM_ nameMap \name occ ->
+    case occ of
+      ([_], [_]) -> pure ()
+      (ss, ms) -> do
+        unless (head (unpackFS name) == '_') $ do
+          when (null ms) $ errM (head ss) $ "Slave port " <> show name <> " has no assosiated master"
+          when (null ss) $ errM (head ms) $ "Master port " <> show name <> " has no assosiated slave"
+        -- would be nice to show locations of all occurances here, not sure how to do that while
+        -- keeping ghc api
+        when (length ms > 1) $
+          errM (head ms) $ "Master port " <> show name <> " defined " <> show (length ms) <> " times"
+        when (length ss > 1) $
+          errM (head ss) $ "Slave port " <> show name <> " defined " <> show (length ss) <> " times"
 
 -- Creating ------------------------------------------------------------
 
