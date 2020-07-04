@@ -212,6 +212,7 @@ errM loc msg = do
 -- easiest library to descover these kind of functions.
 
 tupP :: p ~ GhcPs => [LPat p] -> LPat p
+tupP [pat] = pat
 tupP pats = noLoc $ TuplePat NoExt pats GHC.Boxed
 
 vecP :: p ~ GhcPs => SrcSpan -> [LPat p] -> LPat p
@@ -225,6 +226,7 @@ tildeP :: p ~ GhcPs => SrcSpan -> LPat p -> LPat p
 tildeP loc lpat = L loc (LazyPat NoExt lpat)
 
 tupT :: p ~ GhcPs => [LHsType p] -> LHsType p
+tupT [ty] = ty
 tupT tys = noLoc $ HsTupleTy NoExt HsBoxedTuple tys
 
 vecT :: p ~ GhcPs => SrcSpan -> [LHsType p] -> LHsType p
@@ -263,6 +265,7 @@ vecE loc (e@(L l _):es) = varE l (con "Cons") `appE` e `appE` parenE (vecE loc e
 vecE loc [] = varE loc (con "Nil")
 
 tupE :: p ~ GhcPs => SrcSpan -> [LHsExpr p] -> LHsExpr p
+tupE _ [ele] = ele
 tupE loc elems = L loc $ ExplicitTuple NoExt tupArgs GHC.Boxed
   where
     tupArgs = map (\arg@(L l _) -> L l (Present NoExt arg)) elems
