@@ -292,7 +292,6 @@ portTypeSigM = \case
     unsafePerformIO . throwOneError $
       Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "portTypeSig") msgdoc
   Lazy _ p -> portTypeSigM p
-  -- -- TODO make the 'a' unique
   SignalExpr (L l _) -> do
     n <- uniqueCounter <<+= 1
     pure $ (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
@@ -716,7 +715,7 @@ circuitQQExpM = do
 
   context <- mapM (\(ty, p) -> tyEq noSrcSpan <$> (portTypeSigM p) <*> pure (HsTypes.hsSigWcType ty)) allTypes
 
-      -- the full signature
+  -- the full signature
   let inferenceSig :: LHsSigType GhcPs
       inferenceSig = HsIB NoExt (noLoc $ HsQualTy NoExt (noLoc context) runCircuitsType)
       inferenceHelperTy =
