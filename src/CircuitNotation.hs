@@ -409,7 +409,7 @@ circuitBody = \case
           --   idC -< finalStmt
           _ -> do
             let ref = Ref (PortName finLoc "final:stmt")
-            circuitBinds <>= [bodyBinding (Just ref) (bod)]
+            bodyBinding (Just ref) (bod)
             circuitMasters .= ref
 
       stmt -> errM finLoc ("Unhandled final stmt " <> show (Data.toConstr stmt))
@@ -431,9 +431,9 @@ handleStmtM (L loc stmt) = case stmt of
         circuitTypes <>= sigs
       _ -> errM loc ("Unhandled let statement" <> show (Data.toConstr letBind))
   BodyStmt _xbody body _idr _idr' ->
-    circuitBinds <>= [bodyBinding Nothing body]
+    bodyBinding Nothing body
   BindStmt _xbody bind body _idr _idr' ->
-    circuitBinds <>= [bodyBinding (Just $ bindSlave bind) body]
+    bodyBinding (Just $ bindSlave bind) body
   _ -> errM loc "Unhandled stmt"
 
 -- | Turn patterns to the left of a @<-@ into a PortDescription.
@@ -492,23 +492,23 @@ bodyBinding
   -- ^ the bound variable, this can be Nothing if there is no @<-@ (a circuit with no slaves)
   -> GenLocated loc (HsExpr p)
   -- ^ the statement with an optional @-<@
-  -> Binding (LHsExpr p) PortName
-bodyBinding mInput lexpr@(L _loc expr) =
+  -> CircuitM ()
+bodyBinding mInput lexpr@(L loc expr) =
   case expr of
     HsArrApp _xhsArrApp circuit port HsFirstOrderApp True ->
-      Binding
+      circuitBinds <>= [Binding
         { bCircuit = circuit
         , bOut     = bindMaster port
         , bIn      = fromMaybe (Tuple []) mInput
-        }
+        }]
 
-    _ ->
-      Binding
+    _ -> case mInput of
+      Nothing -> errM loc "standalone expressions are not allowed"
+      Just input -> circuitBinds <>= [Binding
         { bCircuit = lexpr
         , bOut     = Tuple []
-        , bIn      = fromMaybe (error "standalone expressions not allowed") mInput
-        }
-
+        , bIn      = input
+        }]
 
 -- Checking ------------------------------------------------------------
 
