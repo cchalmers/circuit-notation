@@ -503,7 +503,7 @@ bodyBinding mInput lexpr@(L loc expr) =
         }]
 
     _ -> case mInput of
-      Nothing -> errM loc "standalone expressions are not allowed"
+      Nothing -> errM loc "standalone expressions are not allowed (are Arrows enabled?)"
       Just input -> circuitBinds <>= [Binding
         { bCircuit = lexpr
         , bOut     = Tuple []
