@@ -547,7 +547,7 @@ checkCircuit = do
 
 bindWithSuffix :: p ~ GhcPs => GHC.DynFlags -> String -> PortDescription PortName -> LPat p
 bindWithSuffix dflags suffix = \case
-  Tuple ps -> tupP $ fmap (bindWithSuffix dflags suffix) ps
+  Tuple ps -> tildeP noSrcSpan $ tupP $ fmap (bindWithSuffix dflags suffix) ps
   Vec s ps -> vecP s $ fmap (bindWithSuffix dflags suffix) ps
   Ref (PortName loc fs) -> varP loc (GHC.unpackFS fs <> suffix)
   PortErr loc msgdoc -> unsafePerformIO . throwOneError $
