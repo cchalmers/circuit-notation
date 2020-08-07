@@ -95,14 +95,19 @@ types1 = circuit $ \a -> do
 registerC :: a -> Circuit (Signal dom a) (Signal dom a)
 registerC a = Circuit $ \(s, ()) -> (a :- s, ())
 
-zip2S :: (Signal dom a, Signal dom b) -> Signal dom (a, b)
-zip2S (a :- as, b :- bs) = (a, b) :- zip2S (as, bs)
+-- zip2S :: (Signal dom a, Signal dom b) -> Signal dom (a, b)
+-- zip2S (a :- as, b :- bs) = (a, b) :- zip2S (as, bs)
 
-unzip2S :: Signal dom (a, b) -> (Signal dom a, Signal dom b)
-unzip2S ((a, b) :- asbs) =
-  let ~(as, bs) = unzip2S asbs
-  in  (a :- as, b :- bs)
+-- unzip2S :: Signal dom (a, b) -> (Signal dom a, Signal dom b)
+-- unzip2S ((a, b) :- asbs) =
+--   let ~(as, bs) = unzip2S asbs
+--   in  (a :- as, b :- bs)
 
+-- counter :: Circuit () (Signal dom Int)
+-- counter = circuitS do
+--   Signal n <- registerC 0 -< Signal n'
+--   let n' = n + 1
+--   idC -< Signal n
 
 counterExpanded :: Circuit () (Signal dom Int)
 counterExpanded =
@@ -119,12 +124,6 @@ counterExpanded =
                n'Sig = fmap circuitLogic nSig
            in (nSig, ())
 
--- counter :: Circuit () (Signal Int)
--- counter = circuitS do
---   Signal n <- registerC 0 -< Signal n'
---   let n' = n + 1
---   idC -< Signal n
-
 counter2Expanded :: Circuit () (Signal dom (Int, Int))
 counter2Expanded =
   let
@@ -137,17 +136,53 @@ counter2Expanded =
       \ ((), ())
         -> let (nSig, ()) = runCircuit (registerC 0) (n'Sig, ())
                (mSig, ()) = runCircuit (registerC 0) (m'Sig, ())
+               (n'Sig, m'Sig) = unbundle (fmap circuitLogic (bundle (nSig, mSig)))
+               -- is this version nicer?
+               -- (n'Sig, m'Sig) = unbundle (circuitLogic <$> nSig <*> mSig)
+           in (bundle (n'Sig, m'Sig), ())
 
-               (n'Sig, m'Sig) = unzip2S (fmap circuitLogic (zip2S (nSig, mSig)))
-           in (zip2S (n'Sig, m'Sig), ())
+-- writePacketDriver
+--   :: Circuit
+--      ( DF dom (Unsigned packetSize, BitVector addr, BitVector id)
+--      , DF dom (BitVector dat)
+--      )
+--      ( Axi addr dat id () )
+-- writePacketDriver = circuitS
+--   \(packetAddr :-> packetAck, writeData :-> writeAck) -> do
 
--- counter2 :: Circuit () (Signal (Int, Int))
+--   Signal addr <- registerC 0 -< Signal addr'
+--   let addr'
+--         | newPacket = packetAddr
+--         | otherwise = addr + burstOffset
+
+  
+
+-- counter2 :: Circuit () (Signal dom (Int, Int))
 -- counter2 = circuitS do
 --   Signal n <- registerC 0 -< Signal n'
 --   Signal m <- registerC 8 -< Signal m'
 --   let n' = n + 1
 --   let m' = m + 1
 --   idC -< Signal (n, m)
+
+counter3 :: Circuit () (Signal dom Int)
+counter3 = circuitS do
+  Signal n <- registerC 0 -< Signal n'
+  Signal m <- registerC 8 -< Signal m'
+  let n' = n + 1
+      m' = m + 1
+  idC -< Signal (n' + m')
+
+-- inout :: Circuit (Signal dom Int) (Signal dom Int)
+-- inout = circuitS \(Signal j) -> do
+--   Signal j' <- registerC 0 -< Signal j
+--   let a = j' + 2
+--   idC -< Signal a
+
+-- latest :: Circuit (DF Int) (Signal Int)
+-- latest = circuitS $ \(DFM2S v a) -> do
+--   l <- registerC 0 -< if v then a else l
+--   idC -< l
 
 
 

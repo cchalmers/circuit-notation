@@ -27,6 +27,8 @@ Notation for describing the 'Circuit' type.
 
 module CircuitNotation (plugin) where
 
+import Debug.Trace
+
 -- base
 import           Control.Exception
 import           Control.Monad.IO.Class (MonadIO (..))
@@ -92,6 +94,11 @@ isCircuitVar = \case
   HsVar _ (L _ v) -> v == GHC.mkVarUnqual "circuit"
   _               -> False
 
+isCircuitSVar :: p ~ GhcPs => HsExpr p -> Bool
+isCircuitSVar = \case
+  HsVar _ (L _ v) -> v == GHC.mkVarUnqual "circuitS"
+  _               -> False
+
 isDollar :: p ~ GhcPs => HsExpr p -> Bool
 isDollar = \case
   HsVar _ (L _ v) -> v == GHC.mkVarUnqual "$"
@@ -123,6 +130,12 @@ data PortDescription a
 
 _Ref :: L.Prism' (PortDescription a) a
 _Ref = L.prism' Ref (\case Ref a -> Just a; _ -> Nothing)
+
+_SignalPat :: L.Prism' (PortDescription a) (LPat GhcPs)
+_SignalPat = L.prism' SignalPat (\case SignalPat a -> Just a; _ -> Nothing)
+
+_SignalExpr :: L.Prism' (PortDescription a) (LHsExpr GhcPs)
+_SignalExpr = L.prism' SignalExpr (\case SignalExpr a -> Just a; _ -> Nothing)
 
 instance L.Plated (PortDescription a) where
   plate f = \case
@@ -294,10 +307,10 @@ portTypeSigM = \case
   Lazy _ p -> portTypeSigM p
   SignalExpr (L l _) -> do
     n <- uniqueCounter <<+= 1
-    pure $ (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
+    pure $ (conT l "Signal") `appTy` (varT l "dom") `appTy` (varT l (genLocName l ("sig_" <> show n)))
   SignalPat (L l _) -> do
     n <- uniqueCounter <<+= 1
-    pure $ (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
+    pure $ (conT l "Signal") `appTy` (varT l "dom") `appTy` (varT l (genLocName l ("sig_" <> show n)))
   PortType _ p -> portTypeSigM p
 
 genLocName :: SrcSpan -> String -> String
@@ -577,7 +590,7 @@ expWithSuffix :: p ~ GhcPs => String -> PortDescription PortName -> LHsExpr p
 expWithSuffix suffix = \case
   Tuple ps -> tupE noSrcSpan $ fmap (expWithSuffix suffix) ps
   Vec s ps -> vecE s $ fmap (expWithSuffix suffix) ps
-  Ref (PortName loc fs)   -> varE loc (var $ GHC.unpackFS fs <> suffix)
+  Ref (PortName loc fs) -> varE loc (var $ GHC.unpackFS fs <> suffix)
   -- lazyness only affects the pattern side
   Lazy _ p   -> expWithSuffix suffix p
   PortErr _ _ -> error "expWithSuffix PortErr!"
@@ -735,10 +748,8 @@ circuitQQExpM = do
             [noLoc inferenceHelperTy]
             [noLoc $ patBind (varP noSrcSpan "inferenceHelper") (runCircuitExprs)]
             (varE noSrcSpan (var "inferenceHelper") `appE` lamE [runCircuitBinds, pats] body)
-  -- ppr c
-  pure c
 
-  -- pure $ varE noSrcSpan (var "undefined")
+  pure c
 
 -- [inference-helper]
 -- The inference helper constructs the circuit and provides all the `runCircuit`s with the types
@@ -760,6 +771,179 @@ circuitQQExpM = do
 --       -> CircuitT (aTy, bTy) (b'Ty, a'Ty)
 --      ) -> CircuitT (aTy, bTy) (b'Ty, a'Ty)
 -- inferenceHelper = \f -> Circuit (f runCircuit runCircuit)
+
+
+
+-- value circuits ------------------------------------------------------
+
+-- Circuits where you work with things at the value level. For the first version you need to pattern
+-- match on things down the point where they are Signals, no shallower. Going deeper might be
+-- possible but it can get ambiguous (maybe I could say data constructors don't contain signals and
+-- this would let you pattern match deeper).
+--
+-- In the future it could be possible to use the type checker to let me know if something has
+-- signals inside and deal with them.
+
+-- counterExpanded :: Circuit () (Signal Int)
+-- counterExpanded =
+--   let
+--     circuitLogicSignal :: Signal Int -> Signal (Int, Int)
+--     circuitLogicSignal = fmap circuitLogic
+--     circuitLogic =
+--       \ n ->
+--         let n' = n + 1
+--         in  (n, n')
+--   in Circuit $
+--       \ ((), ())
+--         -> let grouped = n'Sig
+--                result = circuitLogicSignal grouped
+--                (nSig, n'Sig) = unzip2S result
+--            in (nSig, ())
+
+-- counter :: Circuit () (Signal Int)
+-- counter = circuitS $ \a -> do
+--   n <- registerC 0 -< n'
+--   let n' = n + 1
+--   idC -< n
+
+circuitOutputVars :: CircuitM [LPat GhcPs]
+circuitOutputVars = do
+  masters <- L.use circuitSlaves
+  binds <- L.use circuitBinds
+  let portNames = L.toListOf (L.cosmos . _SignalPat)
+  pure $ portNames masters <> foldMap (\b -> portNames (bIn b)) binds
+
+-- | The input variables
+circuitInputVars :: CircuitM [LHsExpr GhcPs]
+circuitInputVars = do
+  slaves <- L.use circuitMasters
+  binds <- L.use circuitBinds
+  let portNames = L.toListOf (L.cosmos . _SignalExpr)
+  pure $ portNames slaves <> foldMap (\b -> portNames (bOut b)) binds
+
+expr2pat :: LHsExpr GhcPs -> LPat GhcPs
+expr2pat (L l expr) = case expr of
+  HsVar NoExt var -> L l (VarPat NoExt var)
+  -- _ -> L l (VarPat NoExt (L l $ var "hi"))
+
+pat2Expr :: LPat GhcPs -> LHsExpr GhcPs
+pat2Expr (L l expr) = case expr of
+  VarPat loc var -> L l (HsVar loc var)
+
+exprNames :: LHsExpr GhcPs -> Located GHC.RdrName
+exprNames (L _ expr) = case expr of
+  HsVar _ locNm -> locNm
+
+patNames :: LPat GhcPs -> Located GHC.RdrName
+patNames (L _ pat) = case pat of
+  VarPat _ locNm -> locNm
+  SigPat _ lpat -> patNames lpat
+
+replaceSignals :: CircuitM ()
+replaceSignals = circuitMasters . L.indexing (L.deep _SignalExpr) .@= \i -> varE noSrcSpan (var $ "hello" <> show i)
+
+signalCircuitExp
+  :: p ~ GhcPs
+  => CircuitM (LHsExpr p)
+signalCircuitExp = do
+  checkCircuit
+
+  dflags <- GHC.getDynFlags
+  -- replaceSignals
+  binds <- L.use circuitBinds
+  lets <- L.use circuitLets
+  slaves <- L.use circuitSlaves
+  masters <- L.use circuitMasters
+
+  outputVars <- circuitOutputVars
+  inputVars <- circuitInputVars
+
+
+  -- Construction of the circuit expression
+  let decs = imap (\i -> noLoc . decFromBinding dflags i) binds
+      pats = bindOutputs dflags masters slaves
+
+      bundle = if length inputVars > 1 then (varE noSrcSpan (var "bundle") `appE`) else id
+      unbundle = if length outputVars > 1 then (varE noSrcSpan (var "unbundle") `appE`) else id
+
+      circuitLogic :: LHsExpr GhcPs
+      circuitLogic =
+        lamE [tupP outputVars] $
+          letE noSrcSpan [] lets (tupE noSrcSpan inputVars)
+
+  replaceSignals
+  slaves <- L.use circuitSlaves
+  masters <- L.use circuitMasters
+  inputVars <- circuitInputVars
+
+  let m2s = expWithSuffix "_M2S" masters
+      s2m = expWithSuffix "_S2M" slaves
+      res = tupE noSrcSpan [bundle m2s, s2m]
+
+      runCircuitLogicExpr = noLoc $ patBind (tupP (expr2pat <$> inputVars))
+        (
+          unbundle
+          (varE noSrcSpan (var "fmap") `appE`
+            varE noSrcSpan (var "circuitLogic") `appE`
+            ( parenE $
+                bundle
+                (tupE noSrcSpan (pat2Expr <$> outputVars))
+            )
+          )
+        )
+
+      body :: LHsExpr GhcPs
+      body = letE noSrcSpan [] (runCircuitLogicExpr : decs) res
+
+
+  -- see [inference-helper]
+  mapM_
+    (\(Binding _ outs ins) -> gatherTypes outs >> gatherTypes ins)
+    binds
+  mapM_ gatherTypes [masters, slaves]
+
+  slavesTy <- portTypeSigM slaves
+  mastersTy <- portTypeSigM masters
+  let mkRunTy bind =
+        mkRunCircuitTy <$>
+          (portTypeSigM (bOut bind)) <*>
+          (portTypeSigM (bIn bind))
+  bindTypes <- mapM mkRunTy binds
+  let runCircuitsType =
+        noLoc (HsParTy NoExt (tupT bindTypes `arrTy` circuitTTy slavesTy mastersTy))
+          `arrTy` circuitTy slavesTy mastersTy
+
+  allTypes <- L.use portTypes
+
+  context <-
+    mapM
+      (\(ty, p) -> tyEq noSrcSpan <$> (portTypeSigM p) <*> pure (HsTypes.hsSigWcType ty))
+      allTypes
+
+  -- the full signature
+  let inferenceSig :: LHsSigType GhcPs
+      inferenceSig = HsIB NoExt (noLoc $ HsQualTy NoExt (noLoc context) runCircuitsType)
+      inferenceHelperTy =
+        TypeSig NoExt
+          [noLoc (var "inferenceHelper")]
+          (HsWC NoExt inferenceSig)
+
+  let numBinds = length binds
+      runCircuitExprs = lamE [varP noSrcSpan "f"] $
+        circuitConstructor noSrcSpan `appE`
+          noLoc (HsPar NoExt
+          (varE noSrcSpan (var "f") `appE` tupE noSrcSpan (replicate numBinds (runCircuitFun noSrcSpan))))
+      runCircuitBinds = tupP $ map (\i -> varP noSrcSpan ("run" <> show i)) [0 .. numBinds-1]
+
+  let c = letE noSrcSpan
+            [noLoc inferenceHelperTy]
+            [ noLoc $ patBind (varP noSrcSpan "inferenceHelper") (runCircuitExprs)
+            , noLoc $ patBind (varP noSrcSpan "circuitLogic") circuitLogic
+            ]
+            (varE noSrcSpan (var "inferenceHelper") `appE` lamE [runCircuitBinds, pats] body)
+
+  pure c
+
 
 
 grr :: MonadIO m => OccName.NameSpace -> m ()
@@ -821,13 +1005,28 @@ transform = SYB.everywhereM (SYB.mkM transform') where
   -- the circuit keyword directly applied (either with parenthesis or with BlockArguments)
   transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
     | isCircuitVar circuitVar = runCircuitM $ do
-        parseCircuit lappB >> completeUnderscores >> circuitQQExpM
+        c <- parseCircuit lappB >> completeUnderscores >> circuitQQExpM
+        ppr c
+        pure c
 
   -- `circuit $` application
   transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
     | isCircuitVar circuitVar && isDollar infixVar = do
         runCircuitM $ do
           parseCircuit appR >> completeUnderscores >> circuitQQExpM
+
+  -- the circuit keyword directly applied (either with parenthesis or with BlockArguments)
+  transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
+    | isCircuitSVar circuitVar = runCircuitM $ do
+        c <- parseCircuit lappB >> completeUnderscores >> signalCircuitExp
+        ppr c
+        pure c
+
+  -- `circuit $` application
+  transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
+    | isCircuitSVar circuitVar && isDollar infixVar = do
+        runCircuitM $ do
+          parseCircuit appR >> completeUnderscores >> signalCircuitExp
 
   transform' e = pure e
 

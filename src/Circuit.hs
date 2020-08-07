@@ -13,6 +13,8 @@ This file contains the 'Circuit' type, that the notation describes.
 {-# LANGUAGE DeriveFunctor       #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
+{-# LANGUAGE DefaultSignatures        #-}
+{-# LANGUAGE TypeFamilyDependencies        #-}
 
 {-# LANGUAGE DataKinds        #-}
 {-# LANGUAGE TypeOperators        #-}
@@ -83,3 +85,83 @@ type instance S2M (Signal dom a) = ()
 -- | Circuit type.
 newtype Circuit a b = Circuit {runCircuit :: (M2S a, S2M b) -> (M2S b, S2M a)}
 type CircuitT a b = (M2S a, S2M b) -> (M2S b, S2M a)
+
+class Bundle a where
+  type Unbundled (dom :: Domain) a = res | res -> dom a
+  type Unbundled dom a = Signal dom a
+  -- | Example:
+  --
+  -- @
+  -- __bundle__ :: ('Signal' dom a, 'Signal' dom b) -> 'Signal' dom (a,b)
+  -- @
+  --
+  -- However:
+  --
+  -- @
+  -- __bundle__ :: 'Signal' dom 'Clash.Sized.BitVector.Bit' -> 'Signal' dom 'Clash.Sized.BitVector.Bit'
+  -- @
+  bundle :: Unbundled dom a -> Signal dom a
+
+  {-# INLINE bundle #-}
+  default bundle :: (Signal dom a ~ Unbundled dom a)
+                 => Unbundled dom a -> Signal dom a
+  bundle s = s
+  -- | Example:
+  --
+  -- @
+  -- __unbundle__ :: 'Signal' dom (a,b) -> ('Signal' dom a, 'Signal' dom b)
+  -- @
+  --
+  -- However:
+  --
+  -- @
+  -- __unbundle__ :: 'Signal' dom 'Clash.Sized.BitVector.Bit' -> 'Signal' dom 'Clash.Sized.BitVector.Bit'
+  -- @
+  unbundle :: Signal dom a -> Unbundled dom a
+
+  {-# INLINE unbundle #-}
+  default unbundle :: (Unbundled dom a ~ Signal dom a)
+                   => Signal dom a -> Unbundled dom a
+  unbundle s = s
+
+instance Bundle ()
+instance Bundle Bool
+instance Bundle Integer
+instance Bundle Int
+instance Bundle Float
+instance Bundle Double
+instance Bundle (Maybe a)
+instance Bundle (Either a b)
+
+instance Bundle (a1, a2) where
+  type Unbundled dom (a1, a2) = (Signal dom a1, Signal dom a2)
+  bundle = zip2S
+  unbundle = unzip2S
+
+instance Bundle (a1, a2, a3) where
+  type Unbundled dom (a1, a2, a3) = (Signal dom a1, Signal dom a2, Signal dom a3)
+  bundle = zip3S
+  unbundle = unzip3S
+
+-- instance Bundle Bit
+-- instance Bundle (BitVector n)
+-- instance Bundle (Index n)
+-- instance Bundle (Fixed rep int frac)
+-- instance Bundle (Signed n)
+-- instance Bundle (Unsigned n)
+
+zip2S :: (Signal dom a, Signal dom b) -> Signal dom (a, b)
+zip2S (a :- as, b :- bs) = (a, b) :- zip2S (as, bs)
+
+zip3S :: (Signal dom a, Signal dom b, Signal dom c) -> Signal dom (a, b, c)
+zip3S (a :- as, b :- bs, c :- cs) = (a, b, c) :- zip3S (as, bs, cs)
+
+unzip2S :: Signal dom (a, b) -> (Signal dom a, Signal dom b)
+unzip2S ((a, b) :- asbs) =
+  let ~(as, bs) = unzip2S asbs
+  in  (a :- as, b :- bs)
+
+unzip3S :: Signal dom (a, b, c) -> (Signal dom a, Signal dom b, Signal dom c)
+unzip3S ((a, b, c) :- asbscs) =
+  let ~(as, bs, cs) = unzip3S asbscs
+  in  (a :- as, b :- bs, c :- cs)

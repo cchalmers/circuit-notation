@@ -90,6 +90,7 @@ unfstC3 :: Circuit (DF dom a) (DF dom a, DF dom b)
 unfstC3 = circuit $ \a -> do
   ab <- idC -< (a, _b)
   ab' <- idC -< ab
+  idc
   idC -< ab'
 
 
