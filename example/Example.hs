@@ -34,7 +34,7 @@ idCircuit :: Circuit a a
 idCircuit = idC
 
 swapC :: Circuit (a,b) (b,a)
-swapC = circuit $ \(a,b) -> (b,a)
+swapC = circuit $ \ ~(a,b) -> ~(b,a)
 
 circuitA :: Circuit () (DF domain Int)
 circuitA = Circuit (const (pure (DFM2S True 3), ()))

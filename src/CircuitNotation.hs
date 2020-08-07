@@ -474,6 +474,7 @@ bindMaster (L loc expr) = case expr of
   HsApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig
     | OccName.occNameString occ == "Signal" -> SignalExpr sig
   ExprWithTySig ty expr' -> PortType ty (bindMaster expr')
+  ELazyPat _ expr' -> Lazy loc (bindMaster expr')
 
   -- OpApp _xapp (L _ circuitVar) (L _ infixVar) appR -> k
 
