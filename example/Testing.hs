@@ -26,6 +26,8 @@ For testing the circuit notation.
 
 module Example where
 
+import Data.Default (def)
+
 import           Circuit
 -- import Data.Default
 
@@ -86,11 +88,11 @@ import           Circuit
 unsafeC :: Circuit a b
 unsafeC = undefined
 
-types1 :: Circuit a a
-types1 = circuit $ \a -> do
-  x :: Int <- unsafeC -< a
-  b <- unsafeC -< x
-  idC -< b
+-- types1 :: Circuit a a
+-- types1 = circuit $ \a -> do
+--   x :: Int <- unsafeC -< a
+--   b <- unsafeC -< x
+--   idC -< b
 
 registerC :: a -> Circuit (Signal dom a) (Signal dom a)
 registerC a = Circuit $ \(s, ()) -> (a :- s, ())
@@ -165,8 +167,34 @@ counter2Expanded =
 --   let m' = m + 1
 --   idC -< Signal (n, m)
 
-counter3 :: Circuit () (Signal dom Int)
-counter3 = circuitS do
+counter3 :: Circuit (Signal dom Bool) (Signal dom Int)
+-- counter3 = let
+--   inferenceHelper ::
+--     () =>
+--     ((Circuit (Signal dom sig_2_1701703739) (Signal dom sig_3_1701701011)
+--       -> CircuitT (Signal dom sig_2_1701703739) (Signal dom sig_3_1701701011),
+--       Circuit (Signal dom sig_4_1711713739) (Signal dom sig_5_1711711011)
+--       -> CircuitT (Signal dom sig_4_1711713739) (Signal dom sig_5_1711711011))
+--      -> CircuitT _bsTy (Signal dom sig_1))
+--     -> Circuit _bsTy (Signal dom sig_1)
+--   inferenceHelper = \ f -> Circuit (f (runCircuit, runCircuit))
+--   circuitLogic
+--     = \ (n, m)
+--         -> let
+--              n' = n + 1
+--              m' = m + 1
+--            in ((n' + m'), n', m')
+--   in
+--   inferenceHelper
+--     \ (run0, run1) (_bs_M2S, _)
+--       -> let
+--            (hello0, n', m') = unbundle (fmap circuitLogic (bundle (n, m)))
+--            _bs_S2M = def
+--            (n, _) = run0 (registerC 0) (n', ())
+--            (m, _) = run1 (registerC 8) (m', ())
+--          in (bundle hello0, _bs_S2M)
+
+counter3 = circuitS \_bs -> do
   Signal n <- registerC 0 -< Signal n'
   Signal m <- registerC 8 -< Signal m'
   let n' = n + 1

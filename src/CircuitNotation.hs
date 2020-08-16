@@ -166,6 +166,8 @@ data CircuitState dec exp nm = CircuitState
     -- ^ type signatures in let bindings
     , _circuitLets    :: [dec]
     -- ^ user defined let expression inside the circuit
+    , _circuitCompletes :: [dec]
+    -- ^ completions of underscored ports
     , _circuitBinds   :: [Binding exp nm]
     -- ^ @out <- circuit <- in@ statements
     , _circuitMasters :: PortDescription nm
@@ -195,6 +197,7 @@ runCircuitM (CircuitM m) = do
         , _circuitSlaves = Tuple []
         , _circuitTypes = []
         , _circuitLets = []
+        , _circuitCompletes = []
         , _circuitBinds = []
         , _circuitMasters = Tuple []
         , _portVarTypes = Map.empty
@@ -614,7 +617,7 @@ decFromBinding :: p ~ GhcPs => GHC.DynFlags -> Int -> Binding (LHsExpr p) PortNa
 decFromBinding dflags i Binding {..} = do
   let bindPat  = bindOutputs dflags bOut bIn
       inputExp = createInputs bIn bOut
-      bod = varE noSrcSpan (var $ "run" <> show i) `appE` bCircuit `appE` inputExp
+      bod = varE noSrcSpan (var $ "run" <> show i) `appE` parenE bCircuit `appE` inputExp
    in patBind bindPat bod
 
 patBind :: p ~ GhcPs => LPat p -> LHsExpr p -> HsBind p
@@ -694,12 +697,14 @@ circuitQQExpM = do
   dflags <- GHC.getDynFlags
   binds <- L.use circuitBinds
   lets <- L.use circuitLets
+  completions <- L.use circuitCompletes
   slaves <- L.use circuitSlaves
   masters <- L.use circuitMasters
 
   -- Construction of the circuit expression
   let decs = concat
         [ lets
+        , completions
         , imap (\i -> noLoc . decFromBinding dflags i) binds
         ]
   let pats = bindOutputs dflags masters slaves
@@ -811,7 +816,8 @@ circuitOutputVars = do
   masters <- L.use circuitSlaves
   binds <- L.use circuitBinds
   let portNames = L.toListOf (L.cosmos . _SignalPat)
-  pure $ portNames masters <> foldMap (\b -> portNames (bIn b)) binds
+  -- pure $ portNames masters <> foldMap (\b -> portNames (bIn b)) binds
+  pure $ foldMap (\b -> portNames (bIn b)) binds
 
 -- | The input variables
 circuitInputVars :: CircuitM [LHsExpr GhcPs]
@@ -819,7 +825,8 @@ circuitInputVars = do
   slaves <- L.use circuitMasters
   binds <- L.use circuitBinds
   let portNames = L.toListOf (L.cosmos . _SignalExpr)
-  pure $ portNames slaves <> foldMap (\b -> portNames (bOut b)) binds
+  -- pure $ portNames slaves <> foldMap (\b -> portNames (bOut b)) binds
+  pure $ foldMap (\b -> portNames (bOut b)) binds
 
 expr2pat :: LHsExpr GhcPs -> LPat GhcPs
 expr2pat (L l expr) = case expr of
@@ -852,6 +859,7 @@ signalCircuitExp = do
   -- replaceSignals
   binds <- L.use circuitBinds
   lets <- L.use circuitLets
+  completions <- L.use circuitCompletes
   slaves <- L.use circuitSlaves
   masters <- L.use circuitMasters
 
@@ -863,8 +871,8 @@ signalCircuitExp = do
   let decs = imap (\i -> noLoc . decFromBinding dflags i) binds
       pats = bindOutputs dflags masters slaves
 
-      bundle = if length inputVars > 1 then (varE noSrcSpan (var "bundle") `appE`) else id
-      unbundle = if length outputVars > 1 then (varE noSrcSpan (var "unbundle") `appE`) else id
+      bundle = if length inputVars > 1 then (\x -> varE noSrcSpan (var "bundle") `appE` parenE x) else id
+      unbundle = if length outputVars > 1 then (\x -> varE noSrcSpan (var "unbundle") `appE` parenE x) else id
 
       circuitLogic :: LHsExpr GhcPs
       circuitLogic =
@@ -893,7 +901,7 @@ signalCircuitExp = do
         )
 
       body :: LHsExpr GhcPs
-      body = letE noSrcSpan [] (runCircuitLogicExpr : decs) res
+      body = letE noSrcSpan [] (runCircuitLogicExpr : decs <> completions) res
 
 
   -- see [inference-helper]
@@ -965,7 +973,8 @@ completeUnderscores = do
       addDef suffix = \case
         Ref (PortName loc (unpackFS -> name@('_':_))) -> do
           let bind = patBind (varP loc (name <> suffix)) (varE loc (thName 'def))
-          circuitLets <>= [L loc bind]
+          circuitCompletes <>= [L loc bind]
+          pure ()
 
         _ -> pure ()
       addBind :: Binding exp PortName -> CircuitM ()
@@ -1013,7 +1022,9 @@ transform = SYB.everywhereM (SYB.mkM transform') where
   transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
     | isCircuitVar circuitVar && isDollar infixVar = do
         runCircuitM $ do
-          parseCircuit appR >> completeUnderscores >> circuitQQExpM
+          x <- parseCircuit appR >> completeUnderscores >> circuitQQExpM
+          ppr x
+          pure x
 
   -- the circuit keyword directly applied (either with parenthesis or with BlockArguments)
   transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
