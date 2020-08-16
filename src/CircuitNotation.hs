@@ -237,10 +237,10 @@ tyNum :: p ~ GhcPs => SrcSpan -> Int -> LHsType p
 tyNum s i = L s (HsTyLit NoExt (HsNumTy GHC.NoSourceText (fromIntegral i)))
 
 appTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
-appTy a b = L noSrcSpan (HsAppTy NoExt a b)
+appTy a b = L noSrcSpan (HsAppTy NoExt a (parenthesizeHsType GHC.appPrec b))
 
 appE :: p ~ GhcPs => LHsExpr p -> LHsExpr p -> LHsExpr p
-appE fun arg = L noSrcSpan $ HsApp NoExt fun arg
+appE fun arg = L noSrcSpan $ HsApp NoExt fun (parenthesizeHsExpr GHC.appPrec arg)
 
 varE :: p ~ GhcPs => SrcSpan -> GHC.RdrName -> LHsExpr p
 varE loc rdr = L loc (HsVar NoExt (L loc rdr))
