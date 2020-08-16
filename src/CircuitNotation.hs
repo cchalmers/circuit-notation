@@ -193,13 +193,6 @@ runCircuitM (CircuitM m) = do
   unless (isEmptyBag errs) $ liftIO . throwIO $ GHC.mkSrcErr errs
   pure a
 
-err :: SrcSpan -> String -> CircuitM Err.ErrMsg
-err loc msg = do
-  dflags <- GHC.getDynFlags
-  let errMsg = Err.mkLocMessageAnn Nothing Err.SevFatal loc (Outputable.text msg)
-  pure $
-    Err.mkErrMsg dflags loc Outputable.alwaysQualify errMsg
-
 errM :: SrcSpan -> String -> CircuitM ()
 errM loc msg = do
   dflags <- GHC.getDynFlags
@@ -273,12 +266,15 @@ tupE loc elems = L loc $ ExplicitTuple NoExt tupArgs GHC.Boxed
 unL :: Located a -> a
 unL (L _ a) = a
 
+-- | Get a ghc name from a TH name that's known to be unique.
 thName :: TH.Name -> GHC.RdrName
 thName nm =
   case Convert.thRdrNameGuesses nm of
     [name] -> name
     _      -> error "thName called on a non NameG Name"
 
+-- | Make a type signature from a port description. Things without a concrete type (e.g. Signal a),
+--   are given a type name based on the location of the port.
 portTypeSigM :: p ~ GhcPs => PortDescription PortName -> CircuitM (LHsType p)
 portTypeSigM = \case
   Tuple ps -> tupT <$> mapM portTypeSigM ps
@@ -300,6 +296,7 @@ portTypeSigM = \case
     pure $ (conT l "Signal") `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
   PortType _ p -> portTypeSigM p
 
+-- | Generate a "unique" name by appending the location as a string.
 genLocName :: SrcSpan -> String -> String
 genLocName (GHC.RealSrcSpan rss) prefix = prefix <> "_" <>
   foldMap (\f -> show (f rss)) [srcSpanStartLine, srcSpanEndLine, srcSpanStartCol, srcSpanEndCol]
