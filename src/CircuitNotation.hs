@@ -554,21 +554,25 @@ bindWithSuffix dflags suffix = \case
   SignalPat lpat -> lpat
   PortType _ p -> bindWithSuffix dflags suffix p
 
+data Direc = Fwd | Bwd
+
 bindOutputs
   :: p ~ GhcPs
   => GHC.DynFlags
+  -> Direc
   -> PortDescription PortName
   -- ^ slave ports
   -> PortDescription PortName
   -- ^ master ports
   -> LPat p
-bindOutputs dflags slaves masters = tupP [m2s, s2m]
+bindOutputs dflags Fwd slaves masters = noLoc $ ConPatIn (noLoc $ con ":->") (InfixCon m2s s2m)
   where
-  -- super hacky: at this point we can generate names not possible in
-  -- normal haskell (i.e. with spaces or colons). This is used to
-  -- emulate non-captuable names.
-  m2s = bindWithSuffix dflags "_M2S" masters
-  s2m = bindWithSuffix dflags "_S2M" slaves
+  m2s = bindWithSuffix dflags "_Fwd" masters
+  s2m = bindWithSuffix dflags "_Bwd" slaves
+bindOutputs dflags Bwd slaves masters = noLoc $ ConPatIn (noLoc $ con ":->") (InfixCon m2s s2m)
+  where
+  m2s = bindWithSuffix dflags "_Bwd" masters
+  s2m = bindWithSuffix dflags "_Fwd" slaves
 
 expWithSuffix :: p ~ GhcPs => String -> PortDescription PortName -> LHsExpr p
 expWithSuffix suffix = \case
@@ -584,20 +588,25 @@ expWithSuffix suffix = \case
 
 createInputs
   :: p ~ GhcPs
-  => PortDescription PortName
+  => Direc
+  -> PortDescription PortName
   -- ^ slave ports
   -> PortDescription PortName
   -- ^ master ports
   -> LHsExpr p
-createInputs slaves masters = tupE noSrcSpan [m2s, s2m]
+createInputs Fwd slaves masters = noLoc $ OpApp NoExt s2m (varE noSrcSpan (con ":->")) m2s
   where
-  m2s = expWithSuffix "_M2S" masters
-  s2m = expWithSuffix "_S2M" slaves
+  m2s = expWithSuffix "_Bwd" masters
+  s2m = expWithSuffix "_Fwd" slaves
+createInputs Bwd slaves masters = noLoc $ OpApp NoExt s2m (varE noSrcSpan (con ":->")) m2s
+  where
+  m2s = expWithSuffix "_Fwd" masters
+  s2m = expWithSuffix "_Bwd" slaves
 
 decFromBinding :: p ~ GhcPs => GHC.DynFlags -> Int -> Binding (LHsExpr p) PortName -> HsBind p
 decFromBinding dflags i Binding {..} = do
-  let bindPat  = bindOutputs dflags bOut bIn
-      inputExp = createInputs bIn bOut
+  let bindPat  = bindOutputs dflags Bwd bIn bOut
+      inputExp = createInputs Fwd bOut bIn
       bod = varE noSrcSpan (var $ "run" <> show i) `appE` bCircuit `appE` inputExp
    in patBind bindPat bod
 
@@ -628,7 +637,7 @@ unsnoc (x:xs) = Just (x:a, b)
     where Just (a,b) = unsnoc xs
 
 arrTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
-arrTy a b = noLoc $ HsFunTy NoExt a b
+arrTy a b = noLoc $ HsFunTy NoExt (parenthesizeHsType GHC.funPrec a) (parenthesizeHsType GHC.funPrec b)
 
 varT :: SrcSpan -> String -> LHsType GhcPs
 varT loc nm = L loc (HsTyVar NoExt NotPromoted (L loc (tyVar nm)))
@@ -686,8 +695,8 @@ circuitQQExpM = do
         [ lets
         , imap (\i -> noLoc . decFromBinding dflags i) binds
         ]
-  let pats = bindOutputs dflags masters slaves
-      res  = createInputs slaves masters
+  let pats = bindOutputs dflags Fwd masters slaves
+      res  = createInputs Bwd slaves masters
 
       body :: LHsExpr GhcPs
       body = letE noSrcSpan [] decs res
@@ -783,8 +792,8 @@ completeUnderscores = do
         _ -> pure ()
       addBind :: Binding exp PortName -> CircuitM ()
       addBind (Binding _ bOut bIn) = do
-        L.traverseOf_ L.cosmos (addDef "_M2S") bOut
-        L.traverseOf_ L.cosmos (addDef "_S2M") bIn
+        L.traverseOf_ L.cosmos (addDef "_Fwd") bOut
+        L.traverseOf_ L.cosmos (addDef "_Bwd") bIn
   mapM_ addBind binds
   addBind (Binding undefined masters slaves)
 

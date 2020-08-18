@@ -86,14 +86,25 @@ import           Circuit
 unsafeC :: Circuit a b
 unsafeC = undefined
 
-types1 :: Circuit a a
+-- types1 :: Circuit a a
+-- types1 = circuit $ \a -> do
+--   x :: Int <- unsafeC -< a
+--   b <- unsafeC -< x
+--   idC -< b
+
+types1 :: Circuit (Signal dom a) (Signal dom a)
 types1 = circuit $ \a -> do
-  x :: Int <- unsafeC -< a
-  b <- unsafeC -< x
-  idC -< b
+  idC -< a
+
+-- types1 :: Circuit (Signal dom a) (Signal dom a)
+-- types1 = circuit $ \a -> do
+--   x :: Int <- unsafeC -< a
+--   Signal b <- unsafeC -< x
+--   c <- registerC undefined -< Signal b
+--   idC -< c
 
 registerC :: a -> Circuit (Signal dom a) (Signal dom a)
-registerC a = Circuit $ \(s, ()) -> (a :- s, ())
+registerC a = Circuit $ \(s :-> ()) -> (() :-> (a :- s))
 
 zip2S :: (Signal dom a, Signal dom b) -> Signal dom (a, b)
 zip2S (a :- as, b :- bs) = (a, b) :- zip2S (as, bs)
@@ -104,20 +115,20 @@ unzip2S ((a, b) :- asbs) =
   in  (a :- as, b :- bs)
 
 
-counterExpanded :: Circuit () (Signal dom Int)
-counterExpanded =
-  let
-    circuitLogic =
-      \ n ->
-        let n' = n + 1
-        in  n'
-  in Circuit $
-      \ ((), ())
-        -> let
-               (nSig, ()) = runCircuit (registerC 0) (n'Sig, ())
+-- counterExpanded :: Circuit () (Signal dom Int)
+-- counterExpanded =
+--   let
+--     circuitLogic =
+--       \ n ->
+--         let n' = n + 1
+--         in  n'
+--   in Circuit $
+--       \ ((), ())
+--         -> let
+--                (nSig, ()) = runCircuit (registerC 0) (n'Sig, ())
 
-               n'Sig = fmap circuitLogic nSig
-           in (nSig, ())
+--                n'Sig = fmap circuitLogic nSig
+--            in (nSig, ())
 
 -- counter :: Circuit () (Signal Int)
 -- counter = circuitS do
@@ -125,21 +136,21 @@ counterExpanded =
 --   let n' = n + 1
 --   idC -< Signal n
 
-counter2Expanded :: Circuit () (Signal dom (Int, Int))
-counter2Expanded =
-  let
-    circuitLogic =
-      \ (n,m) ->
-        let n' = n + 1
-            m' = m + 1
-        in  (n', m')
-  in Circuit $
-      \ ((), ())
-        -> let (nSig, ()) = runCircuit (registerC 0) (n'Sig, ())
-               (mSig, ()) = runCircuit (registerC 0) (m'Sig, ())
+-- counter2Expanded :: Circuit () (Signal dom (Int, Int))
+-- counter2Expanded =
+--   let
+--     circuitLogic =
+--       \ (n,m) ->
+--         let n' = n + 1
+--             m' = m + 1
+--         in  (n', m')
+--   in Circuit $
+--       \ ((), ())
+--         -> let (nSig, ()) = runCircuit (registerC 0) (n'Sig, ())
+--                (mSig, ()) = runCircuit (registerC 0) (m'Sig, ())
 
-               (n'Sig, m'Sig) = unzip2S (fmap circuitLogic (zip2S (nSig, mSig)))
-           in (zip2S (n'Sig, m'Sig), ())
+--                (n'Sig, m'Sig) = unzip2S (fmap circuitLogic (zip2S (nSig, mSig)))
+--            in (zip2S (n'Sig, m'Sig), ())
 
 -- counter2 :: Circuit () (Signal (Int, Int))
 -- counter2 = circuitS do
