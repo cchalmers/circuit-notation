@@ -80,8 +80,9 @@ import qualified Data.Generics          as SYB
 
 -- Names ---------------------------------------------------------------
 
-constructorName, circuitTypeName, runCircuitName :: String
+constructorName, typeConstructorName, circuitTypeName, runCircuitName :: String
 constructorName = "Circuit"
+typeConstructorName = "Circuit"
 circuitTypeName = "CircuitT"
 runCircuitName = "runCircuit"
 
@@ -646,7 +647,7 @@ conT :: SrcSpan -> String -> LHsType GhcPs
 conT loc nm = L loc (HsTyVar NoExt NotPromoted (L loc (tyCon nm)))
 
 circuitTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
-circuitTy a b = (conT noSrcSpan constructorName) `appTy` a `appTy` b
+circuitTy a b = (conT noSrcSpan typeConstructorName) `appTy` a `appTy` b
 
 circuitTTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
 circuitTTy a b = (conT noSrcSpan circuitTypeName) `appTy` a `appTy` b
