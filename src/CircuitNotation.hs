@@ -842,6 +842,8 @@ transform = SYB.everywhereM (SYB.mkM transform') where
 plugin :: GHC.Plugin
 plugin = GHC.defaultPlugin
   { GHC.parsedResultAction = \_cliOptions -> pluginImpl
+    -- Mark plugin as 'pure' to prevent recompilations.
+  , GHC.pluginRecompile = \_cliOptions -> pure GHC.NoForceRecompile
   }
 
 -- | The actual implementation.
