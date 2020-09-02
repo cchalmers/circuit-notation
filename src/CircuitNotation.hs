@@ -164,6 +164,8 @@ data CircuitState dec exp nm = CircuitState
     -- ^ type of more 'complicated' things (very far from vigorous)
     , _uniqueCounter :: Int
     -- ^ counter to keep internal variables "unique"
+    , _circuitLoc :: SrcSpan
+    -- ^ span of the circuit expression
     }
 
 L.makeLenses 'CircuitState
@@ -188,6 +190,7 @@ runCircuitM (CircuitM m) = do
         , _portVarTypes = Map.empty
         , _portTypes = []
         , _uniqueCounter = 1
+        , _circuitLoc = noSrcSpan
         }
   (a, s) <- runStateT m emptyCircuitState
   let errs = _cErrors s
@@ -389,7 +392,8 @@ circuitBody = \case
   -- strip out parenthesis
   L _ (HsPar _ lexp) -> circuitBody lexp
 
-  L _ (HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, L finLoc finStmt)))) -> do
+  L loc (HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, L finLoc finStmt)))) -> do
+    circuitLoc .= loc
     mapM_ handleStmtM stmts
 
     case finStmt of
@@ -413,7 +417,9 @@ circuitBody = \case
       stmt -> errM finLoc ("Unhandled final stmt " <> show (Data.toConstr stmt))
 
   -- the simple case without do notation
-  L loc master -> circuitMasters .= bindMaster (L loc master)
+  L loc master -> do
+    circuitLoc .= loc
+    circuitMasters .= bindMaster (L loc master)
 
 -- | Handle a single statement.
 handleStmtM
@@ -724,11 +730,13 @@ circuitQQExpM = do
   context <- mapM (\(ty, p) -> tyEq noSrcSpan <$> (portTypeSigM p) <*> pure (HsTypes.hsSigWcType ty)) allTypes
 
   -- the full signature
-  let inferenceSig :: LHsSigType GhcPs
+  loc <- L.use circuitLoc
+  let inferenceHelperName = genLocName loc "inferenceHelper"
+      inferenceSig :: LHsSigType GhcPs
       inferenceSig = HsIB NoExt (noLoc $ HsQualTy NoExt (noLoc context) runCircuitsType)
       inferenceHelperTy =
         TypeSig NoExt
-          [noLoc (var "inferenceHelper")]
+          [noLoc (var inferenceHelperName)]
           (HsWC NoExt inferenceSig)
 
   let numBinds = length binds
@@ -740,8 +748,8 @@ circuitQQExpM = do
 
   let c = letE noSrcSpan
             [noLoc inferenceHelperTy]
-            [noLoc $ patBind (varP noSrcSpan "inferenceHelper") (runCircuitExprs)]
-            (varE noSrcSpan (var "inferenceHelper") `appE` lamE [runCircuitBinds, pats] body)
+            [noLoc $ patBind (varP noSrcSpan inferenceHelperName) (runCircuitExprs)]
+            (varE noSrcSpan (var inferenceHelperName) `appE` lamE [runCircuitBinds, pats] body)
   -- ppr c
   pure c
 

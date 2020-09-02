@@ -18,6 +18,7 @@ This file contains examples of using the Circuit Notation.
 {-# LANGUAGE DataKinds        #-}
 
 {-# OPTIONS -fplugin=CircuitNotation #-}
+{-# OPTIONS -Wall #-}
 
 
 ---- | Hack idiom-brackets using Source Plugin.
@@ -97,7 +98,7 @@ unfstC = circuit $ \a -> do
 
 unfstC2 :: Circuit (DF domain a) (DF domain a, DF domain b)
 unfstC2 = circuit $ \a -> do
-  ab <- idC -< (a, _b)
+  ab <- circuit (\(aa,bb) -> (bb,aa)) -< (_b, a)
   idC -< ab
 
 unfstC3 :: Circuit (DF dom a) (DF dom a, DF dom b)
@@ -147,13 +148,14 @@ vec00 = circuit \[] -> []
 -- --   c'' <- myIdCircuit -< c'
 -- --   idC -< (i', c'')
 
--- -- tupleCircuit :: Circuit Int Char
--- -- tupleCircuit = id $ circuit \a -> do
--- --   b <- (circuit \a -> do b <- myCircuit -< a;idC -< b) -< a
--- --   a' <- myCircuitRev -< b
--- --   b' <- myCircuit -< a'
--- --   b'' <- (circuit \aa -> do idC -< aa) -< b'
--- --   idC -< b''
+-- tupleCircuit :: Circuit Int Char
+-- tupleCircuit = id $ circuit \a -> do
+--   let b = 3
+--   b <- (circuit \a -> do b <- myCircuit -< a;idC -< b) -< a
+--   a' <- myCircuitRev -< b
+--   b' <- myCircuit -< a'
+--   b'' <- (circuit \aa -> do idC -< aa) -< b'
+--   idC -< b''
 
 -- -- simpleCircuit :: Circuit Int Char
 -- -- simpleCircuit = id $ circuit \a -> do
@@ -163,14 +165,14 @@ vec00 = circuit \[] -> []
 -- --   b'' <- (circuit \aa -> do idC -< aa) -< b'
 -- --   idC -< b''
 
--- -- myCircuit :: Int
--- -- myCircuit = circuit \(v1 :: DF d a) (v3 :: blah) -> do
--- --   v1' <- total -< (v3 :: DF domain Int) -< (v4 :: DF domain Int)
--- --   v2 <- total -< v1
--- --   let a = b
--- --   -- v2' <- total2 -< v2
--- --   -- v3 <- zipC -< (v1', v2')
--- --   v1 <- idC -< v3
+-- myCircuit :: Int
+-- myCircuit = circuit \(v1 :: DF d a) (v3 :: blah) -> do
+--   v1' <- total -< (v3 :: DF domain Int) -< (v4 :: DF domain Int)
+--   v2 <- total -< v1
+--   let a = b
+--   -- v2' <- total2 -< v2
+--   -- v3 <- zipC -< (v1', v2')
+--   v1 <- idC -< v3
 
 -- -- type RunCircuit a b = (Circuit a b -> (M2S a, S2M b) -> (M2S b, S2M a))
 -- -- type CircuitId a b = Circuit a b -> Circuit a b
