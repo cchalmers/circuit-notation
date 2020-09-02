@@ -206,7 +206,7 @@ errM loc msg = do
 -- ghc helpers ---------------------------------------------------------
 
 -- It's very possible that most of these are already in the ghc library in some form. It's not the
--- easiest library to descover these kind of functions.
+-- easiest library to discover these kind of functions.
 
 tupP :: p ~ GhcPs => [LPat p] -> LPat p
 tupP [pat] = pat
@@ -338,7 +338,7 @@ letE loc sigs binds expr = L loc (HsLet NoExt localBinds expr)
     hsBinds :: LHsBindsLR GhcPs GhcPs
     hsBinds = listToBag binds
 
--- | Simple construction of a lamda expression
+-- | Simple construction of a lambda expression
 lamE :: p ~ GhcPs => [LPat p] -> LHsExpr p -> LHsExpr p
 lamE pats expr = noLoc $ HsLam NoExt mg
   where
@@ -380,7 +380,7 @@ parseCircuit = \case
     circuitSlaves .= bindSlave matchPats
     circuitBody body
 
-  -- a version without a lamda (i.e. no slaves)
+  -- a version without a lambda (i.e. no slaves)
   e -> circuitBody e
 
 -- | The main part of a circuit expression. Either a do block or simple rearranging case.
@@ -538,9 +538,9 @@ checkCircuit = do
       ([_], [_]) -> pure ()
       (ss, ms) -> do
         unless (head (unpackFS name) == '_') $ do
-          when (null ms) $ errM (head ss) $ "Slave port " <> show name <> " has no assosiated master"
-          when (null ss) $ errM (head ms) $ "Master port " <> show name <> " has no assosiated slave"
-        -- would be nice to show locations of all occurances here, not sure how to do that while
+          when (null ms) $ errM (head ss) $ "Slave port " <> show name <> " has no associated master"
+          when (null ss) $ errM (head ms) $ "Master port " <> show name <> " has no associated slave"
+        -- would be nice to show locations of all occurrences here, not sure how to do that while
         -- keeping ghc api
         when (length ms > 1) $
           errM (head ms) $ "Master port " <> show name <> " defined " <> show (length ms) <> " times"
@@ -586,7 +586,7 @@ expWithSuffix suffix = \case
   Tuple ps -> tupE noSrcSpan $ fmap (expWithSuffix suffix) ps
   Vec s ps -> vecE s $ fmap (expWithSuffix suffix) ps
   Ref (PortName loc fs)   -> varE loc (var $ GHC.unpackFS fs <> suffix)
-  -- lazyness only affects the pattern side
+  -- laziness only affects the pattern side
   Lazy _ p   -> expWithSuffix suffix p
   PortErr _ _ -> error "expWithSuffix PortErr!"
   SignalExpr lexpr -> lexpr
@@ -807,7 +807,7 @@ completeUnderscores = do
   addBind (Binding undefined masters slaves)
 
 
--- | Transform declations in the module by converting circuit blocks.
+-- | Transform declarations in the module by converting circuit blocks.
 transform
     :: GHC.Located (HsModule GhcPs)
     -> GHC.Hsc (GHC.Located (HsModule GhcPs))
