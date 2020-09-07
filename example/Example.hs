@@ -113,7 +113,7 @@ swapTest :: forall a b. Circuit (a,b) (b,a)
 swapTest = circuit $ \(a,b) -> do idC -< (b, a)
 
 unvecC :: Circuit (Vec 2 a) (a, a)
-unvecC = circuit \[x,y] -> (x, y)
+unvecC = circuit \ ~[x,y] -> (x, y)
 
 vecC :: Circuit (a, a) (Vec 2 a)
 vecC = circuit \(x, y) -> [x,y]

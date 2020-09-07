@@ -13,6 +13,8 @@ This file contains the 'Circuit' type, that the notation describes.
 {-# LANGUAGE DeriveFunctor       #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
+{-# LANGUAGE PatternSynonyms     #-}
+{-# LANGUAGE ViewPatterns        #-}
 
 {-# LANGUAGE DataKinds        #-}
 {-# LANGUAGE TypeOperators        #-}
@@ -22,6 +24,7 @@ module Circuit where
 
 import Data.Default
 import GHC.TypeLits
+import Unsafe.Coerce
 
 data Domain
 
@@ -64,8 +67,21 @@ data Vec n a where
   Nil :: Vec 0 a
   Cons :: a -> Vec n a -> Vec (n + 1) a
 
+headV :: Vec (n + 1) a -> a
+headV (x `Cons` _) = x
+headV Nil = error ""
+tailV :: forall n a. Vec (n + 1) a -> Vec n a
+tailV (_ `Cons` xs) = unsafeCoerce xs
+tailV Nil = error ""
+
+pattern (:>) :: a -> Vec n a -> Vec (n + 1) a
+pattern (:>) x xs <- ((\ys -> (headV ys, tailV ys)) -> (x,xs))
+  where
+      (:>) x xs = Cons x xs
+infixr 5 :>
+
 myVec :: Vec 2 Int
-myVec = Cons 1 (Cons 2 Nil)
+myVec = 1 :> 2 :> Nil
 
 type instance Fwd (Vec n a) = Vec n (Fwd a)
 type instance Bwd (Vec n a) = Vec n (Bwd a)
