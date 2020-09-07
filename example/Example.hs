@@ -18,6 +18,7 @@ This file contains examples of using the Circuit Notation.
 {-# LANGUAGE DataKinds        #-}
 
 {-# OPTIONS -fplugin=CircuitNotation #-}
+{-# OPTIONS -fplugin-opt=CircuitNotation:debug #-}
 {-# OPTIONS -Wall #-}
 
 

@@ -809,34 +809,18 @@ completeUnderscores = do
 
 -- | Transform declarations in the module by converting circuit blocks.
 transform
-    :: GHC.Located (HsModule GhcPs)
+    :: Bool
+    -> GHC.Located (HsModule GhcPs)
     -> GHC.Hsc (GHC.Located (HsModule GhcPs))
-transform = SYB.everywhereM (SYB.mkM transform') where
+transform debug = SYB.everywhereM (SYB.mkM transform') where
   transform' :: LHsExpr GhcPs -> GHC.Hsc (LHsExpr GhcPs)
-  -- transform' e@(L _ (HsLet _xlet (L _ (HsValBinds _ (ValBinds _ _ sigs))) _lappB)) =
--- --  -- --                debug $ show i ++ " ==> " ++ SYB.gshow stmt
-  --   -- trace (show (SYB.gshow <$> sigs)) pure e
-  --   -- trace (show (( \ (TypeSig _ ids ty) -> show (deepShowD <$> ids) <> " " <> deepShowD ty) . unL <$> sigs)) pure e
-  --   case sigs of
-  --     [L _ (TypeSig _ [L _ x] y)] -> do
-  --       -- dflags <- GHC.getDynFlags
-  --       let pp :: GHC.Outputable a => a -> String
-  --           pp = const "" -- GHC.showPpr dflags
-  --       case y of
-  --         HsWC _ (HsIB _ (L _ (HsTyVar _ _ (L _ (GHC.Unqual occ))))) -> do
-  --           grr (OccName.occNameSpace occ)
-  --         HsWC _ (HsIB _ (L _ (HsQualTy _ (L _ [L _ (HsOpTy NoExt _ (L _ (GHC.Orig m nm)) _)]) _))) -> do
-  --           grr $ OccName.occNameSpace nm
-  --           traceM (pp m)
-  --         _ -> pure () -- error "nope"
-  --       trace (pp x) trace (SYB.gshow y) pure e
-  --       -- error "fin"
-  --     _ -> pure e
 
   -- the circuit keyword directly applied (either with parenthesis or with BlockArguments)
   transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
     | isCircuitVar circuitVar = runCircuitM $ do
-        parseCircuit lappB >> completeUnderscores >> circuitQQExpM
+        x <- parseCircuit lappB >> completeUnderscores >> circuitQQExpM
+        when debug $ ppr x
+        pure x
 
   -- `circuit $` application
   transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
@@ -849,17 +833,24 @@ transform = SYB.everywhereM (SYB.mkM transform') where
 -- | The plugin for circuit notation.
 plugin :: GHC.Plugin
 plugin = GHC.defaultPlugin
-  { GHC.parsedResultAction = \_cliOptions -> pluginImpl
+  { GHC.parsedResultAction = pluginImpl
     -- Mark plugin as 'pure' to prevent recompilations.
   , GHC.pluginRecompile = \_cliOptions -> pure GHC.NoForceRecompile
   }
 
 -- | The actual implementation.
-pluginImpl :: GHC.ModSummary -> GHC.HsParsedModule -> GHC.Hsc GHC.HsParsedModule
-pluginImpl _modSummary m = do
-    -- dflags <- GHC.getDynFlags
-    -- debug $ GHC.showPpr dflags (GHC.hpm_module m)
-    hpm_module' <- transform (GHC.hpm_module m)
+pluginImpl :: [GHC.CommandLineOption] -> GHC.ModSummary -> GHC.HsParsedModule -> GHC.Hsc GHC.HsParsedModule
+pluginImpl cliOptions _modSummary m = do
+    -- cli options are activated by -fplugin-opt=CircuitNotation:debug
+    debug <- case cliOptions of
+      []        -> pure False
+      ["debug"] -> pure True
+      _ -> do dflags <- GHC.getDynFlags
+              liftIO $ Err.warningMsg dflags $ Outputable.text $
+                "CircuitNotation: unknown cli options " <> show cliOptions
+              pure False
+    hpm_module' <- do
+      transform debug (GHC.hpm_module m)
     let module' = m { GHC.hpm_module = hpm_module' }
     return module'
 
