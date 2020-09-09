@@ -824,11 +824,18 @@ transform debug = SYB.everywhereM (SYB.mkM transform') where
 
   -- `circuit $` application
   transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
-    | isCircuitVar circuitVar && isDollar infixVar = do
+    | isDollar infixVar && dollarChainIsCircuit circuitVar = do
         runCircuitM $ do
           parseCircuit appR >> completeUnderscores >> circuitQQExpM
 
   transform' e = pure e
+
+-- | check if circuit is applied via `a $ chain $ of $ dollars`.
+dollarChainIsCircuit :: HsExpr GhcPs -> Bool
+dollarChainIsCircuit = \case
+  HsVar _ (L _ v)                             -> v == GHC.mkVarUnqual "circuit"
+  OpApp _xapp _appL (L _ infixVar) (L _ appR) -> isDollar infixVar && dollarChainIsCircuit appR
+  _                                           -> False
 
 -- | The plugin for circuit notation.
 plugin :: GHC.Plugin
