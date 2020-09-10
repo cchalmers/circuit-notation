@@ -694,6 +694,7 @@ circuitQQExpM = do
   dflags <- GHC.getDynFlags
   binds <- L.use circuitBinds
   lets <- L.use circuitLets
+  letTypes <- L.use circuitTypes
   slaves <- L.use circuitSlaves
   masters <- L.use circuitMasters
 
@@ -706,7 +707,7 @@ circuitQQExpM = do
       res  = createInputs Bwd slaves masters
 
       body :: LHsExpr GhcPs
-      body = letE noSrcSpan [] decs res
+      body = letE noSrcSpan letTypes decs res
 
   -- see [inference-helper]
   mapM_
