@@ -213,8 +213,12 @@ tupP [pat] = pat
 tupP pats = noLoc $ TuplePat NoExt pats GHC.Boxed
 
 vecP :: p ~ GhcPs => SrcSpan -> [LPat p] -> LPat p
-vecP loc (p@(L l _):pats) = L loc $ ConPatIn (L l (con ":>")) (InfixCon p (vecP loc pats))
-vecP loc [] = L loc $ WildPat NoExt
+vecP srcLoc = \case
+  [] -> go srcLoc []
+  as -> L srcLoc $ ParPat NoExt $ go srcLoc as
+  where
+  go loc (p@(L l _):pats) = L loc $ ConPatIn (L l (con ":>")) (InfixCon p (go loc pats))
+  go loc [] = L loc $ WildPat NoExt
 
 varP :: p ~ GhcPs => SrcSpan -> String -> LPat p
 varP loc nm = L loc $ VarPat NoExt (L loc $ var nm)
@@ -258,8 +262,12 @@ con :: String -> GHC.RdrName
 con = GHC.Unqual . OccName.mkDataOcc
 
 vecE :: p ~ GhcPs => SrcSpan -> [LHsExpr p] -> LHsExpr p
-vecE loc (e@(L l _):es) = parenE $ L loc $ OpApp NoExt e (varE l (con ":>")) (vecE loc es)
-vecE loc [] = varE loc (con "Nil")
+vecE srcLoc = \case
+  [] -> go srcLoc []
+  as -> parenE $ go srcLoc as
+  where
+  go loc (e@(L l _):es) = L loc $ OpApp NoExt e (varE l (con ":>")) (go loc es)
+  go loc [] = varE loc (con "Nil")
 
 tupE :: p ~ GhcPs => SrcSpan -> [LHsExpr p] -> LHsExpr p
 tupE _ [ele] = ele
