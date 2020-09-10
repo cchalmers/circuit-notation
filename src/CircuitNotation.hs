@@ -827,7 +827,9 @@ transform debug = SYB.everywhereM (SYB.mkM transform') where
   transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
     | isDollar infixVar && dollarChainIsCircuit circuitVar = do
         runCircuitM $ do
-          parseCircuit appR >> completeUnderscores >> circuitQQExpM
+          x <- parseCircuit appR >> completeUnderscores >> circuitQQExpM
+          when debug $ ppr x
+          pure x
 
   transform' e = pure e
 
