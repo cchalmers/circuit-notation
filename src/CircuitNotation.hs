@@ -35,6 +35,7 @@ import           Data.Default
 import           Data.Maybe             (fromMaybe)
 import           SrcLoc
 import           System.IO.Unsafe
+import           Data.Typeable
 
 -- ghc
 import           Bag
@@ -832,12 +833,12 @@ transform debug = SYB.everywhereM (SYB.mkM transform') where
         pure x
 
   -- `circuit $` application
-  transform' (L _ (OpApp _xapp (L _ circuitVar) (L _ infixVar) appR))
+  transform' (L _ (OpApp _xapp c@(L _ circuitVar) (L _ infixVar) appR))
     | isDollar infixVar && dollarChainIsCircuit circuitVar = do
         runCircuitM $ do
           x <- parseCircuit appR >> completeUnderscores >> circuitQQExpM
           when debug $ ppr x
-          pure x
+          pure (dollarChainReplaceCircuit x c)
 
   transform' e = pure e
 
@@ -847,6 +848,17 @@ dollarChainIsCircuit = \case
   HsVar _ (L _ v)                             -> v == GHC.mkVarUnqual "circuit"
   OpApp _xapp _appL (L _ infixVar) (L _ appR) -> isDollar infixVar && dollarChainIsCircuit appR
   _                                           -> False
+
+-- | Replace the circuit if it's part of a chain of `$`.
+dollarChainReplaceCircuit :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
+dollarChainReplaceCircuit circuitExpr (L loc app) = case app of
+  HsVar _ (L _loc v)
+    -> if v == GHC.mkVarUnqual "circuit"
+         then circuitExpr
+         else error "dollarChainAddCircuit: not a circuit"
+  OpApp xapp appL (L infixLoc infixVar) appR
+    -> L loc $ OpApp xapp appL (L infixLoc infixVar) (dollarChainReplaceCircuit circuitExpr appR)
+  t -> error $ "dollarChainAddCircuit unhandled case " <> showC t
 
 -- | The plugin for circuit notation.
 plugin :: GHC.Plugin
@@ -872,7 +884,6 @@ pluginImpl cliOptions _modSummary m = do
     let module' = m { GHC.hpm_module = hpm_module' }
     return module'
 
-
 -- Debugging functions -------------------------------------------------
 
 ppr :: GHC.Outputable a => a -> CircuitM ()
@@ -880,8 +891,8 @@ ppr a = do
   dflags <- GHC.getDynFlags
   liftIO $ putStrLn (GHC.showPpr dflags a)
 
--- showC :: Data.Data a => a -> String
--- showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
+showC :: Data.Data a => a -> String
+showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
 
 -- ppp :: MonadIO m => String -> m ()
 -- ppp s = case SP.parseValue s of
