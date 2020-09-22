@@ -25,7 +25,6 @@ library
     , lens
     , mtl
     , pretty
-    , HUnit
     , parsec
     , pretty-show
     , template-haskell
