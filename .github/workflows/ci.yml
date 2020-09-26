@@ -7,6 +7,19 @@ on:
     branches: [master]
 
 jobs:
+  # TODO: Not sure how to cache this one.. cachix?
+  nix:
+    name: nix build
+    runs-on: ubuntu-latest
+    container:
+      image: 'nixos/nix:2.3.6'
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Build
+        run: |
+          nix-build
+
   cabal:
     name: ${{ matrix.os }} / ghc ${{ matrix.ghc }}
     runs-on: ${{ matrix.os }}
