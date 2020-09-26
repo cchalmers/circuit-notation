@@ -11,7 +11,6 @@ Notation for describing the 'Circuit' type.
 -}
 
 {-# LANGUAGE BlockArguments             #-}
-{-# LANGUAGE CPP                        #-}
 {-# LANGUAGE DeriveFoldable             #-}
 {-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveTraversable          #-}
@@ -31,14 +30,18 @@ module CircuitNotation (plugin) where
 -- base
 import           Control.Exception
 import qualified Data.Data              as Data
-import           Data.Default
 import           Data.Maybe             (fromMaybe)
 import           SrcLoc
 import           System.IO.Unsafe
 import           Data.Typeable
 
--- ghc
+-- ghc-lib
+import qualified GHC.ThToHs             as Convert
+import           GHC.Hs
+import           GHC.Hs.Types           as HsTypes
+
 import           Bag
+import           BasicTypes             (PromotionFlag( NotPromoted ))
 import qualified ErrUtils               as Err
 import           FastString             (mkFastString, unpackFS)
 import qualified GhcPlugins             as GHC
@@ -46,25 +49,7 @@ import           HscTypes               (throwOneError)
 import qualified Language.Haskell.TH    as TH
 import qualified OccName
 import qualified Outputable
-
-#if __GLASGOW_HASKELL__ > 808
-import qualified GHC.ThToHs             as Convert
-import           GHC.Hs
-import           GHC.Hs.Types           as HsTypes
-#else
-import qualified Convert
-import           HsSyn                  hiding (noExt)
-import           HsExtension            (GhcPs, NoExt (..))
-import qualified HsTypes
-#endif
-
-#if __GLASGOW_HASKELL__ > 806
 import           TysWiredIn             (eqTyCon_RDR)
-import           BasicTypes             (PromotionFlag( NotPromoted ))
-#else
-import           PrelNames              (eqTyCon_RDR)
-#endif
-
 
 -- containers
 import Data.Map (Map)
@@ -116,13 +101,8 @@ isDollar = \case
 imap :: (Int -> a -> b) -> [a] -> [b]
 imap f = zipWith f [0 ..]
 
-#if __GLASGOW_HASKELL__ > 808
 noExt :: NoExtField
 noExt = noExtField
-#else
-noExt :: NoExt
-noExt = NoExt
-#endif
 
 -- Types ---------------------------------------------------------------
 
@@ -432,13 +412,8 @@ circuitBody = \case
         case bod of
           -- special case for idC as the final statement, gives better type inferences and generates nicer
           -- code
-#if __GLASGOW_HASKELL__ < 810
-          L _ (HsArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) arg _ _)
-            | OccName.occNameString occ == "idC" -> circuitMasters .= bindMaster arg
-#else
           L _ (HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) arg _ _)))))
             | OccName.occNameString occ == "idC" -> circuitMasters .= bindMaster arg
-#endif
 
           -- Otherwise create a binding and use that as the master. This is equivalent to changing
           --   c -< x
@@ -486,13 +461,9 @@ bindSlave (L loc expr) = case expr of
     | OccName.occNameString occ == "Signal" -> SignalPat lpat
   -- empty list is done as the constructor
   ConPatIn (L _ rdr) _
-    | rdr == thName '[] -> Vec loc []
-    | rdr == thName '() -> Tuple []
-#if __GLASGOW_HASKELL__ < 810
-  SigPat ty port -> PortType ty (bindSlave port)
-#else
+    | rdr == GHC.getRdrName GHC.nilDataConName -> Vec loc []
+    | rdr == GHC.getRdrName GHC.unitDataCon -> Tuple []
   SigPat _ port ty -> PortType ty (bindSlave port)
-#endif
   LazyPat _ lpat -> Lazy loc (bindSlave lpat)
   ListPat _ pats -> Vec loc (map bindSlave pats)
   pat ->
@@ -508,23 +479,16 @@ bindSlave (L loc expr) = case expr of
 bindMaster :: p ~ GhcPs => LHsExpr p -> PortDescription PortName
 bindMaster (L loc expr) = case expr of
   HsVar _xvar (L vloc rdrName)
-    | rdrName == thName '() -> Tuple []
-    | rdrName == thName '[] -> Vec vloc []
+    | rdrName == GHC.getRdrName GHC.unitDataCon -> Tuple []
+    | rdrName == GHC.getRdrName GHC.nilDataConName -> Vec vloc []
     | otherwise -> Ref (PortName vloc (fromRdrName rdrName))
   ExplicitTuple _ tups _ -> let
     vals = fmap (\(L _ (Present _ e)) -> e) tups
     in Tuple $ fmap bindMaster vals
   ExplicitList _ _syntaxExpr exprs -> Vec loc $ fmap bindMaster exprs
-#if __GLASGOW_HASKELL__ < 810
-  HsArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig _ _
-    | OccName.occNameString occ == "Signal" -> SignalExpr sig
-  ExprWithTySig ty expr' -> PortType ty (bindMaster expr')
-  ELazyPat _ expr' -> Lazy loc (bindMaster expr')
-#else
   HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig _ _))))
     | OccName.occNameString occ == "Signal" -> SignalExpr sig
   ExprWithTySig _ expr' ty -> PortType ty (bindMaster expr')
-#endif
 
   -- OpApp _xapp (L _ circuitVar) (L _ infixVar) appR -> k
 
@@ -546,21 +510,12 @@ bodyBinding
   -> CircuitM ()
 bodyBinding mInput lexpr@(L loc expr) =
   case expr of
-#if __GLASGOW_HASKELL__ < 810
-    HsArrApp _xhsArrApp circuit port HsFirstOrderApp True ->
-      circuitBinds <>= [Binding
-        { bCircuit = circuit
-        , bOut     = bindMaster port
-        , bIn      = fromMaybe (Tuple []) mInput
-        }]
-#else
     HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xhsArrApp circuit port HsFirstOrderApp True)))) ->
       circuitBinds <>= [Binding
         { bCircuit = circuit
         , bOut     = bindMaster port
         , bIn      = fromMaybe (Tuple []) mInput
         }]
-#endif
 
     _ -> case mInput of
       Nothing -> errM loc "standalone expressions are not allowed (are Arrows enabled?)"
@@ -685,7 +640,7 @@ runCircuitFun :: p ~ GhcPs => SrcSpan -> LHsExpr p
 runCircuitFun loc = varE loc (var runCircuitName)
 
 constVar :: p ~ GhcPs => SrcSpan -> LHsExpr p
-constVar loc = varE loc (thName 'const)
+constVar loc = varE loc (var "const")
 
 deepShowD :: Data.Data a => a -> String
 deepShowD a = show (Data.toConstr a) <>
@@ -851,7 +806,7 @@ completeUnderscores = do
   let addDef :: String -> PortDescription PortName -> CircuitM ()
       addDef suffix = \case
         Ref (PortName loc (unpackFS -> name@('_':_))) -> do
-          let bind = patBind (varP loc (name <> suffix)) (varE loc (thName 'def))
+          let bind = patBind (varP loc (name <> suffix)) (varE loc (var "def"))
           circuitLets <>= [L loc bind]
 
         _ -> pure ()
