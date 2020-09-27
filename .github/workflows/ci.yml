@@ -4,9 +4,22 @@ name: CI
 on:
   pull_request:
   push:
-          #  branches: [master]
+    branches: [master]
 
 jobs:
+  # TODO: Not sure how to cache this one.. cachix?
+  nix:
+    name: nix build
+    runs-on: ubuntu-latest
+    container:
+      image: 'nixos/nix:2.3.6'
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Build
+        run: |
+          nix-build
+
   cabal:
     name: ${{ matrix.os }} / ghc ${{ matrix.ghc }}
     runs-on: ${{ matrix.os }}
@@ -16,7 +29,8 @@ jobs:
         cabal: ["3.2"]
         ghc:
           - "8.6.5"
-          - "8.10.1"
+          - "8.8.3"
+          - "8.10.2"
 
     steps:
     - uses: actions/checkout@v2
@@ -38,6 +52,8 @@ jobs:
       with:
         path: ${{ steps.setup-haskell-cabal.outputs.cabal-store }}
         key: ${{ runner.os }}-${{ matrix.ghc }}-${{ hashFiles('cabal.project.freeze') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.ghc }}-
 
     - name: Build
       run: |
@@ -47,4 +63,3 @@ jobs:
     - name: Test
       run: |
         cabal test all
-

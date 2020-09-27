@@ -11,13 +11,13 @@ Notation for describing the 'Circuit' type.
 -}
 
 {-# LANGUAGE BlockArguments             #-}
-{-# LANGUAGE CPP                        #-}
 {-# LANGUAGE DeriveFoldable             #-}
 {-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveTraversable          #-}
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE PackageImports             #-}
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TemplateHaskell            #-}
@@ -31,40 +31,28 @@ module CircuitNotation (plugin) where
 -- base
 import           Control.Exception
 import qualified Data.Data              as Data
-import           Data.Default
 import           Data.Maybe             (fromMaybe)
 import           SrcLoc
 import           System.IO.Unsafe
 import           Data.Typeable
 
--- ghc
+-- data-default
+import           Data.Default           (def)
+
+-- ghc-lib
+import qualified GHC.ThToHs             as Convert
+import           GHC.Hs
+import           GHC.Hs.Types           as HsTypes
+
 import           Bag
+import           BasicTypes             (PromotionFlag( NotPromoted ))
 import qualified ErrUtils               as Err
 import           FastString             (mkFastString, unpackFS)
 import qualified GhcPlugins             as GHC
 import           HscTypes               (throwOneError)
-import qualified Language.Haskell.TH    as TH
 import qualified OccName
 import qualified Outputable
-
-#if __GLASGOW_HASKELL__ > 808
-import qualified GHC.ThToHs             as Convert
-import           GHC.Hs
-import           GHC.Hs.Types           as HsTypes
-#else
-import qualified Convert
-import           HsSyn                  hiding (noExt)
-import           HsExtension            (GhcPs, NoExt (..))
-import qualified HsTypes
-#endif
-
-#if __GLASGOW_HASKELL__ > 806
 import           TysWiredIn             (eqTyCon_RDR)
-import           BasicTypes             (PromotionFlag( NotPromoted ))
-#else
-import           PrelNames              (eqTyCon_RDR)
-#endif
-
 
 -- containers
 import Data.Map (Map)
@@ -82,6 +70,12 @@ import           Control.Monad.State
 
 -- syb
 import qualified Data.Generics          as SYB
+
+-- template-haskell / template haskell from ghc-lib
+import qualified "ghc-lib-parser"   Language.Haskell.TH        as GLTH
+import qualified "ghc-lib-parser"   Language.Haskell.TH.Syntax as GLTH
+import qualified "template-haskell" Language.Haskell.TH        as THTH
+import qualified "template-haskell" Language.Haskell.TH.Syntax as THTH
 
 -- The stages of this plugin
 --
@@ -116,13 +110,8 @@ isDollar = \case
 imap :: (Int -> a -> b) -> [a] -> [b]
 imap f = zipWith f [0 ..]
 
-#if __GLASGOW_HASKELL__ > 808
 noExt :: NoExtField
 noExt = noExtField
-#else
-noExt :: NoExt
-noExt = NoExt
-#endif
 
 -- Types ---------------------------------------------------------------
 
@@ -301,10 +290,27 @@ tupE loc elems = L loc $ ExplicitTuple noExt tupArgs GHC.Boxed
 unL :: Located a -> a
 unL (L _ a) = a
 
+thNameToGhcLibName :: THTH.Name -> GLTH.Name
+thNameToGhcLibName (THTH.Name (THTH.OccName occName) nameFlavour) =
+  GLTH.Name (GLTH.OccName occName) (go nameFlavour)
+ where
+  go = \case
+    THTH.NameS -> GLTH.NameS
+    THTH.NameQ (THTH.ModName modNm) -> GLTH.NameQ (GLTH.ModName modNm)
+    THTH.NameU u -> GLTH.NameU (toInteger u)
+    THTH.NameL u -> GLTH.NameL (toInteger u)
+    THTH.NameG namespace (THTH.PkgName pkgNm) (THTH.ModName modNm) ->
+      GLTH.NameG (go2 namespace) (GLTH.PkgName pkgNm) (GLTH.ModName modNm)
+
+  go2 = \case
+    THTH.VarName -> GLTH.VarName
+    THTH.DataName -> GLTH.DataName
+    THTH.TcClsName -> GLTH.TcClsName
+
 -- | Get a ghc name from a TH name that's known to be unique.
-thName :: TH.Name -> GHC.RdrName
+thName :: THTH.Name -> GHC.RdrName
 thName nm =
-  case Convert.thRdrNameGuesses nm of
+  case Convert.thRdrNameGuesses (thNameToGhcLibName nm) of
     [name] -> name
     _      -> error "thName called on a non NameG Name"
 
@@ -432,13 +438,8 @@ circuitBody = \case
         case bod of
           -- special case for idC as the final statement, gives better type inferences and generates nicer
           -- code
-#if __GLASGOW_HASKELL__ < 810
-          L _ (HsArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) arg _ _)
-            | OccName.occNameString occ == "idC" -> circuitMasters .= bindMaster arg
-#else
           L _ (HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) arg _ _)))))
             | OccName.occNameString occ == "idC" -> circuitMasters .= bindMaster arg
-#endif
 
           -- Otherwise create a binding and use that as the master. This is equivalent to changing
           --   c -< x
@@ -488,11 +489,7 @@ bindSlave (L loc expr) = case expr of
   ConPatIn (L _ rdr) _
     | rdr == thName '[] -> Vec loc []
     | rdr == thName '() -> Tuple []
-#if __GLASGOW_HASKELL__ < 810
-  SigPat ty port -> PortType ty (bindSlave port)
-#else
   SigPat _ port ty -> PortType ty (bindSlave port)
-#endif
   LazyPat _ lpat -> Lazy loc (bindSlave lpat)
   ListPat _ pats -> Vec loc (map bindSlave pats)
   pat ->
@@ -515,16 +512,9 @@ bindMaster (L loc expr) = case expr of
     vals = fmap (\(L _ (Present _ e)) -> e) tups
     in Tuple $ fmap bindMaster vals
   ExplicitList _ _syntaxExpr exprs -> Vec loc $ fmap bindMaster exprs
-#if __GLASGOW_HASKELL__ < 810
-  HsArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig _ _
-    | OccName.occNameString occ == "Signal" -> SignalExpr sig
-  ExprWithTySig ty expr' -> PortType ty (bindMaster expr')
-  ELazyPat _ expr' -> Lazy loc (bindMaster expr')
-#else
   HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig _ _))))
     | OccName.occNameString occ == "Signal" -> SignalExpr sig
   ExprWithTySig _ expr' ty -> PortType ty (bindMaster expr')
-#endif
 
   -- OpApp _xapp (L _ circuitVar) (L _ infixVar) appR -> k
 
@@ -546,21 +536,12 @@ bodyBinding
   -> CircuitM ()
 bodyBinding mInput lexpr@(L loc expr) =
   case expr of
-#if __GLASGOW_HASKELL__ < 810
-    HsArrApp _xhsArrApp circuit port HsFirstOrderApp True ->
-      circuitBinds <>= [Binding
-        { bCircuit = circuit
-        , bOut     = bindMaster port
-        , bIn      = fromMaybe (Tuple []) mInput
-        }]
-#else
     HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xhsArrApp circuit port HsFirstOrderApp True)))) ->
       circuitBinds <>= [Binding
         { bCircuit = circuit
         , bOut     = bindMaster port
         , bIn      = fromMaybe (Tuple []) mInput
         }]
-#endif
 
     _ -> case mInput of
       Nothing -> errM loc "standalone expressions are not allowed (are Arrows enabled?)"
