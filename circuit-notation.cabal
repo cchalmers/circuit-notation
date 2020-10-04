@@ -19,7 +19,6 @@ library
   -- other-extensions:
   build-depends:
       base >=4.12
-    , data-default
     , ghc-lib
     , syb
     , containers
@@ -27,7 +26,6 @@ library
     , mtl
     , pretty
     , pretty-show
-    , template-haskell
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall -Wcompat

@@ -17,7 +17,6 @@ Notation for describing the 'Circuit' type.
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE PackageImports             #-}
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TemplateHaskell            #-}
@@ -36,9 +35,6 @@ import           SrcLoc
 import           System.IO.Unsafe
 import           Data.Typeable
 
--- data-default
-import           Data.Default           (def)
-
 -- ghc-lib
 import qualified GHC.ThToHs             as Convert
 import           GHC.Hs
@@ -50,6 +46,7 @@ import qualified ErrUtils               as Err
 import           FastString             (mkFastString, unpackFS)
 import qualified GhcPlugins             as GHC
 import           HscTypes               (throwOneError)
+import qualified Language.Haskell.TH    as TH
 import qualified OccName
 import qualified Outputable
 import           TysWiredIn             (eqTyCon_RDR)
@@ -70,12 +67,6 @@ import           Control.Monad.State
 
 -- syb
 import qualified Data.Generics          as SYB
-
--- template-haskell / template haskell from ghc-lib
-import qualified "ghc-lib-parser"   Language.Haskell.TH        as GLTH
-import qualified "ghc-lib-parser"   Language.Haskell.TH.Syntax as GLTH
-import qualified "template-haskell" Language.Haskell.TH        as THTH
-import qualified "template-haskell" Language.Haskell.TH.Syntax as THTH
 
 -- The stages of this plugin
 --
@@ -290,27 +281,10 @@ tupE loc elems = L loc $ ExplicitTuple noExt tupArgs GHC.Boxed
 unL :: Located a -> a
 unL (L _ a) = a
 
-thNameToGhcLibName :: THTH.Name -> GLTH.Name
-thNameToGhcLibName (THTH.Name (THTH.OccName occName) nameFlavour) =
-  GLTH.Name (GLTH.OccName occName) (go nameFlavour)
- where
-  go = \case
-    THTH.NameS -> GLTH.NameS
-    THTH.NameQ (THTH.ModName modNm) -> GLTH.NameQ (GLTH.ModName modNm)
-    THTH.NameU u -> GLTH.NameU (toInteger u)
-    THTH.NameL u -> GLTH.NameL (toInteger u)
-    THTH.NameG namespace (THTH.PkgName pkgNm) (THTH.ModName modNm) ->
-      GLTH.NameG (go2 namespace) (GLTH.PkgName pkgNm) (GLTH.ModName modNm)
-
-  go2 = \case
-    THTH.VarName -> GLTH.VarName
-    THTH.DataName -> GLTH.DataName
-    THTH.TcClsName -> GLTH.TcClsName
-
 -- | Get a ghc name from a TH name that's known to be unique.
-thName :: THTH.Name -> GHC.RdrName
+thName :: TH.Name -> GHC.RdrName
 thName nm =
-  case Convert.thRdrNameGuesses (thNameToGhcLibName nm) of
+  case Convert.thRdrNameGuesses nm of
     [name] -> name
     _      -> error "thName called on a non NameG Name"
 
@@ -487,8 +461,8 @@ bindSlave (L loc expr) = case expr of
     | OccName.occNameString occ == "Signal" -> SignalPat lpat
   -- empty list is done as the constructor
   ConPatIn (L _ rdr) _
-    | rdr == thName '[] -> Vec loc []
-    | rdr == thName '() -> Tuple []
+    | rdr == GHC.getRdrName GHC.nilDataConName -> Vec loc []
+    | rdr == GHC.getRdrName GHC.unitDataCon -> Tuple []
   SigPat _ port ty -> PortType ty (bindSlave port)
   LazyPat _ lpat -> Lazy loc (bindSlave lpat)
   ListPat _ pats -> Vec loc (map bindSlave pats)
@@ -505,8 +479,8 @@ bindSlave (L loc expr) = case expr of
 bindMaster :: p ~ GhcPs => LHsExpr p -> PortDescription PortName
 bindMaster (L loc expr) = case expr of
   HsVar _xvar (L vloc rdrName)
-    | rdrName == thName '() -> Tuple []
-    | rdrName == thName '[] -> Vec vloc []
+    | rdrName == GHC.getRdrName GHC.unitDataCon -> Tuple []
+    | rdrName == GHC.getRdrName GHC.nilDataConName -> Vec vloc []
     | otherwise -> Ref (PortName vloc (fromRdrName rdrName))
   ExplicitTuple _ tups _ -> let
     vals = fmap (\(L _ (Present _ e)) -> e) tups
@@ -666,7 +640,7 @@ runCircuitFun :: p ~ GhcPs => SrcSpan -> LHsExpr p
 runCircuitFun loc = varE loc (var runCircuitName)
 
 constVar :: p ~ GhcPs => SrcSpan -> LHsExpr p
-constVar loc = varE loc (thName 'const)
+constVar loc = varE loc (var "const")
 
 deepShowD :: Data.Data a => a -> String
 deepShowD a = show (Data.toConstr a) <>
@@ -832,7 +806,7 @@ completeUnderscores = do
   let addDef :: String -> PortDescription PortName -> CircuitM ()
       addDef suffix = \case
         Ref (PortName loc (unpackFS -> name@('_':_))) -> do
-          let bind = patBind (varP loc (name <> suffix)) (varE loc (thName 'def))
+          let bind = patBind (varP loc (name <> suffix)) (varE loc (var "def"))
           circuitLets <>= [L loc bind]
 
         _ -> pure ()
