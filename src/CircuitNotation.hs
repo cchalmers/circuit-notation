@@ -16,6 +16,7 @@ Notation for describing the 'Circuit' type.
 {-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveTraversable          #-}
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
+{-# LANGUAGE ImplicitParams             #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
@@ -70,6 +71,8 @@ import           BasicTypes             (PromotionFlag( NotPromoted ))
 import           PrelNames              (eqTyCon_RDR)
 #endif
 
+-- clash-prelude
+import Clash.Prelude (Signal, Vec((:>), Nil))
 
 -- containers
 import Data.Map (Map)
@@ -233,12 +236,12 @@ tupP :: p ~ GhcPs => [LPat p] -> LPat p
 tupP [pat] = pat
 tupP pats = noLoc $ TuplePat noExt pats GHC.Boxed
 
-vecP :: p ~ GhcPs => ExternalNames -> SrcSpan -> [LPat p] -> LPat p
-vecP nms srcLoc = \case
+vecP :: p ~ GhcPs => SrcSpan -> [LPat p] -> LPat p
+vecP srcLoc = \case
   [] -> go srcLoc []
   as -> L srcLoc $ ParPat noExt $ go srcLoc as
   where
-  go loc (p@(L l _):pats) = L loc $ ConPatIn (L l (vecCons nms)) (InfixCon p (go loc pats))
+  go loc (p@(L l _):pats) = L loc $ ConPatIn (L l (thName '(:>))) (InfixCon p (go loc pats))
   go loc [] = L loc $ WildPat noExt
 
 varP :: p ~ GhcPs => SrcSpan -> String -> LPat p
@@ -251,9 +254,9 @@ tupT :: p ~ GhcPs => [LHsType p] -> LHsType p
 tupT [ty] = ty
 tupT tys = noLoc $ HsTupleTy noExt HsBoxedTuple tys
 
-vecT :: p ~ GhcPs => ExternalNames -> SrcSpan -> [LHsType p] -> LHsType p
-vecT nms s [] = L s $ HsParTy noExt (conT s (vecTyCon nms) `appTy` tyNum s 0 `appTy` (varT s (genLocName s "vec")))
-vecT nms s tys = L s $ HsParTy noExt (conT s (vecTyCon nms) `appTy` tyNum s (length tys) `appTy` head tys)
+vecT :: p ~ GhcPs => SrcSpan -> [LHsType p] -> LHsType p
+vecT s [] = L s $ HsParTy noExt (conT s (thName ''Vec) `appTy` tyNum s 0 `appTy` (varT s (genLocName s "vec")))
+vecT s tys = L s $ HsParTy noExt (conT s (thName ''Vec) `appTy` tyNum s (length tys) `appTy` head tys)
 
 tyNum :: p ~ GhcPs => SrcSpan -> Int -> LHsType p
 tyNum s i = L s (HsTyLit noExt (HsNumTy GHC.NoSourceText (fromIntegral i)))
@@ -279,13 +282,13 @@ tyVar = GHC.Unqual . OccName.mkTyVarOcc
 tyCon :: String -> GHC.RdrName
 tyCon = GHC.Unqual . OccName.mkTcOcc
 
-vecE :: p ~ GhcPs => ExternalNames -> SrcSpan -> [LHsExpr p] -> LHsExpr p
-vecE nms srcLoc = \case
+vecE :: p ~ GhcPs => SrcSpan -> [LHsExpr p] -> LHsExpr p
+vecE srcLoc = \case
   [] -> go srcLoc []
   as -> parenE $ go srcLoc as
   where
-  go loc (e@(L l _):es) = L loc $ OpApp noExt e (varE l (vecCons nms)) (go loc es)
-  go loc [] = varE loc (vecNil nms)
+  go loc (e@(L l _):es) = L loc $ OpApp noExt e (varE l (thName '(:>))) (go loc es)
+  go loc [] = varE loc (thName 'Nil)
 
 tupE :: p ~ GhcPs => SrcSpan -> [LHsExpr p] -> LHsExpr p
 tupE _ [ele] = ele
@@ -305,10 +308,10 @@ thName nm =
 
 -- | Make a type signature from a port description. Things without a concrete type (e.g. Signal a),
 --   are given a type name based on the location of the port.
-portTypeSigM :: p ~ GhcPs => ExternalNames -> PortDescription PortName -> CircuitM (LHsType p)
-portTypeSigM nms = \case
-  Tuple ps -> tupT <$> mapM (portTypeSigM nms) ps
-  Vec s ps -> vecT nms s <$> mapM (portTypeSigM nms) ps
+portTypeSigM :: (p ~ GhcPs, ?nms :: ExternalNames) => PortDescription PortName -> CircuitM (LHsType p)
+portTypeSigM = \case
+  Tuple ps -> tupT <$> mapM portTypeSigM ps
+  Vec s ps -> vecT s <$> mapM portTypeSigM ps
   Ref (PortName loc fs) -> do
     L.use (portVarTypes . L.at fs) <&> \case
       Nothing -> varT loc (GHC.unpackFS fs <> "Ty")
@@ -317,14 +320,14 @@ portTypeSigM nms = \case
     dflags <- GHC.getDynFlags
     unsafePerformIO . throwOneError $
       Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "portTypeSig") msgdoc
-  Lazy _ p -> portTypeSigM nms p
+  Lazy _ p -> portTypeSigM p
   SignalExpr (L l _) -> do
     n <- uniqueCounter <<+= 1
-    pure $ (conT l (signalTyCon nms)) `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
+    pure $ (conT l (thName ''Signal)) `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
   SignalPat (L l _) -> do
     n <- uniqueCounter <<+= 1
-    pure $ (conT l (signalTyCon nms)) `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
-  PortType _ p -> portTypeSigM nms p
+    pure $ (conT l (thName ''Signal)) `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
+  PortType _ p -> portTypeSigM p
 
 -- | Generate a "unique" name by appending the location as a string.
 genLocName :: SrcSpan -> String -> String
@@ -599,73 +602,71 @@ checkCircuit = do
 
 -- Creating ------------------------------------------------------------
 
-bindWithSuffix :: p ~ GhcPs => ExternalNames -> GHC.DynFlags -> String -> PortDescription PortName -> LPat p
-bindWithSuffix nms dflags suffix = \case
-  Tuple ps -> tildeP noSrcSpan $ tupP $ fmap (bindWithSuffix nms dflags suffix) ps
-  Vec s ps -> vecP nms s $ fmap (bindWithSuffix nms dflags suffix) ps
+bindWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => GHC.DynFlags -> String -> PortDescription PortName -> LPat p
+bindWithSuffix dflags suffix = \case
+  Tuple ps -> tildeP noSrcSpan $ tupP $ fmap (bindWithSuffix dflags suffix) ps
+  Vec s ps -> vecP s $ fmap (bindWithSuffix dflags suffix) ps
   Ref (PortName loc fs) -> varP loc (GHC.unpackFS fs <> suffix)
   PortErr loc msgdoc -> unsafePerformIO . throwOneError $
     Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "Unhandled bind") msgdoc
-  Lazy loc p -> tildeP loc $ bindWithSuffix nms dflags suffix p
+  Lazy loc p -> tildeP loc $ bindWithSuffix dflags suffix p
   SignalExpr (L l _) -> L l (WildPat noExt)
   SignalPat lpat -> lpat
-  PortType _ p -> bindWithSuffix nms dflags suffix p
+  PortType _ p -> bindWithSuffix dflags suffix p
 
 data Direc = Fwd | Bwd
 
 bindOutputs
-  :: p ~ GhcPs
-  => ExternalNames
-  -> GHC.DynFlags
+  :: (p ~ GhcPs, ?nms :: ExternalNames)
+  => GHC.DynFlags
   -> Direc
   -> PortDescription PortName
   -- ^ slave ports
   -> PortDescription PortName
   -- ^ master ports
   -> LPat p
-bindOutputs nms dflags Fwd slaves masters = noLoc $ ConPatIn (noLoc (fwdBwdCon nms)) (InfixCon m2s s2m)
+bindOutputs dflags Fwd slaves masters = noLoc $ ConPatIn (noLoc (fwdBwdCon ?nms)) (InfixCon m2s s2m)
   where
-  m2s = bindWithSuffix nms dflags "_Fwd" masters
-  s2m = bindWithSuffix nms dflags "_Bwd" slaves
-bindOutputs nms dflags Bwd slaves masters = noLoc $ ConPatIn (noLoc (fwdBwdCon nms)) (InfixCon m2s s2m)
+  m2s = bindWithSuffix dflags "_Fwd" masters
+  s2m = bindWithSuffix dflags "_Bwd" slaves
+bindOutputs dflags Bwd slaves masters = noLoc $ ConPatIn (noLoc (fwdBwdCon ?nms)) (InfixCon m2s s2m)
   where
-  m2s = bindWithSuffix nms dflags "_Bwd" masters
-  s2m = bindWithSuffix nms dflags "_Fwd" slaves
+  m2s = bindWithSuffix dflags "_Bwd" masters
+  s2m = bindWithSuffix dflags "_Fwd" slaves
 
-expWithSuffix :: p ~ GhcPs => ExternalNames -> String -> PortDescription PortName -> LHsExpr p
-expWithSuffix nms suffix = \case
-  Tuple ps -> tupE noSrcSpan $ fmap (expWithSuffix nms suffix) ps
-  Vec s ps -> vecE nms s $ fmap (expWithSuffix nms suffix) ps
+expWithSuffix :: p ~ GhcPs => String -> PortDescription PortName -> LHsExpr p
+expWithSuffix suffix = \case
+  Tuple ps -> tupE noSrcSpan $ fmap (expWithSuffix suffix) ps
+  Vec s ps -> vecE s $ fmap (expWithSuffix suffix) ps
   Ref (PortName loc fs)   -> varE loc (var $ GHC.unpackFS fs <> suffix)
   -- laziness only affects the pattern side
-  Lazy _ p   -> expWithSuffix nms suffix p
+  Lazy _ p   -> expWithSuffix suffix p
   PortErr _ _ -> error "expWithSuffix PortErr!"
   SignalExpr lexpr -> lexpr
   SignalPat (L l _) -> tupE l []
-  PortType _ p -> expWithSuffix nms suffix p
+  PortType _ p -> expWithSuffix suffix p
 
 createInputs
-  :: p ~ GhcPs
-  => ExternalNames
-  -> Direc
+  :: (p ~ GhcPs, ?nms :: ExternalNames)
+  => Direc
   -> PortDescription PortName
   -- ^ slave ports
   -> PortDescription PortName
   -- ^ master ports
   -> LHsExpr p
-createInputs nms Fwd slaves masters = noLoc $ OpApp noExt s2m (varE noSrcSpan (fwdBwdCon nms)) m2s
+createInputs Fwd slaves masters = noLoc $ OpApp noExt s2m (varE noSrcSpan (fwdBwdCon ?nms)) m2s
   where
-  m2s = expWithSuffix nms "_Bwd" masters
-  s2m = expWithSuffix nms "_Fwd" slaves
-createInputs nms Bwd slaves masters = noLoc $ OpApp noExt s2m (varE noSrcSpan (fwdBwdCon nms)) m2s
+  m2s = expWithSuffix "_Bwd" masters
+  s2m = expWithSuffix "_Fwd" slaves
+createInputs Bwd slaves masters = noLoc $ OpApp noExt s2m (varE noSrcSpan (fwdBwdCon ?nms)) m2s
   where
-  m2s = expWithSuffix nms "_Fwd" masters
-  s2m = expWithSuffix nms "_Bwd" slaves
+  m2s = expWithSuffix "_Fwd" masters
+  s2m = expWithSuffix "_Bwd" slaves
 
-decFromBinding :: p ~ GhcPs => ExternalNames -> GHC.DynFlags -> Int -> Binding (LHsExpr p) PortName -> HsBind p
-decFromBinding nms dflags i Binding {..} = do
-  let bindPat  = bindOutputs nms dflags Bwd bIn bOut
-      inputExp = createInputs nms Fwd bOut bIn
+decFromBinding :: (p ~ GhcPs, ?nms :: ExternalNames) => GHC.DynFlags -> Int -> Binding (LHsExpr p) PortName -> HsBind p
+decFromBinding dflags i Binding {..} = do
+  let bindPat  = bindOutputs dflags Bwd bIn bOut
+      inputExp = createInputs Fwd bOut bIn
       bod = varE noSrcSpan (var $ "run" <> show i) `appE` bCircuit `appE` inputExp
    in patBind bindPat bod
 
@@ -675,11 +676,11 @@ patBind lhs expr = PatBind noExt lhs rhs ([], [])
     rhs = GRHSs noExt [gr] (noLoc $ EmptyLocalBinds noExt)
     gr  = L (getLoc expr) (GRHS noExt [] expr)
 
-circuitConstructor :: p ~ GhcPs => ExternalNames -> SrcSpan -> LHsExpr p
-circuitConstructor nms loc = varE loc (circuitCon nms)
+circuitConstructor :: (p ~ GhcPs, ?nms :: ExternalNames) => SrcSpan -> LHsExpr p
+circuitConstructor loc = varE loc (circuitCon ?nms)
 
-runCircuitFun :: p ~ GhcPs => ExternalNames -> SrcSpan -> LHsExpr p
-runCircuitFun nms loc = varE loc (runCircuitName nms)
+runCircuitFun :: (p ~ GhcPs, ?nms :: ExternalNames) => SrcSpan -> LHsExpr p
+runCircuitFun loc = varE loc (runCircuitName ?nms)
 
 constVar :: p ~ GhcPs => SrcSpan -> LHsExpr p
 constVar loc = varE loc (thName 'const)
@@ -704,19 +705,19 @@ varT loc nm = L loc (HsTyVar noExt NotPromoted (L loc (tyVar nm)))
 conT :: SrcSpan -> GHC.RdrName -> LHsType GhcPs
 conT loc nm = L loc (HsTyVar noExt NotPromoted (L loc nm))
 
-circuitTy :: p ~ GhcPs => ExternalNames -> LHsType p -> LHsType p -> LHsType p
-circuitTy nms a b = (conT noSrcSpan (circuitTyCon nms)) `appTy` a `appTy` b
+circuitTy :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType p -> LHsType p -> LHsType p
+circuitTy a b = (conT noSrcSpan (circuitTyCon ?nms)) `appTy` a `appTy` b
 
-circuitTTy :: p ~ GhcPs => ExternalNames -> LHsType p -> LHsType p -> LHsType p
-circuitTTy nms a b = (conT noSrcSpan (circuitTTyCon nms)) `appTy` a `appTy` b
+circuitTTy :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType p -> LHsType p -> LHsType p
+circuitTTy a b = (conT noSrcSpan (circuitTTyCon ?nms)) `appTy` a `appTy` b
 
 -- a b -> (Circuit a b -> CircuitT a b)
-mkRunCircuitTy :: p ~ GhcPs => ExternalNames -> LHsType p -> LHsType p -> LHsType p
-mkRunCircuitTy nms a b = noLoc $ HsFunTy noExt (circuitTy nms a b) (circuitTTy nms a b)
+mkRunCircuitTy :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType p -> LHsType p -> LHsType p
+mkRunCircuitTy a b = noLoc $ HsFunTy noExt (circuitTy a b) (circuitTTy a b)
 
 -- a b -> (CircuitT a b -> Circuit a b)
-mkCircuitTy :: p ~ GhcPs => ExternalNames -> LHsType p -> LHsType p -> LHsType p
-mkCircuitTy nms a b = noLoc $ HsFunTy noExt (circuitTTy nms a b) (circuitTy nms a b)
+mkCircuitTy :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType p -> LHsType p -> LHsType p
+mkCircuitTy a b = noLoc $ HsFunTy noExt (circuitTTy a b) (circuitTy a b)
 
 -- perhaps this should happen on construction
 gatherTypes
@@ -738,10 +739,9 @@ tyEq l a b = L l $ HsOpTy noExt a (noLoc eqTyCon_RDR) b
 -- Final construction --------------------------------------------------
 
 circuitQQExpM
-  :: p ~ GhcPs
-  => ExternalNames
-  -> CircuitM (LHsExpr p)
-circuitQQExpM nms = do
+  :: (p ~ GhcPs, ?nms :: ExternalNames)
+  => CircuitM (LHsExpr p)
+circuitQQExpM = do
   checkCircuit
 
   dflags <- GHC.getDynFlags
@@ -754,10 +754,10 @@ circuitQQExpM nms = do
   -- Construction of the circuit expression
   let decs = concat
         [ lets
-        , imap (\i -> noLoc . decFromBinding nms dflags i) binds
+        , imap (\i -> noLoc . decFromBinding dflags i) binds
         ]
-  let pats = bindOutputs nms dflags Fwd masters slaves
-      res  = createInputs nms Bwd slaves masters
+  let pats = bindOutputs dflags Fwd masters slaves
+      res  = createInputs Bwd slaves masters
 
       body :: LHsExpr GhcPs
       body = letE noSrcSpan letTypes decs res
@@ -768,20 +768,20 @@ circuitQQExpM nms = do
     binds
   mapM_ gatherTypes [masters, slaves]
 
-  slavesTy <- portTypeSigM nms slaves
-  mastersTy <- portTypeSigM nms masters
+  slavesTy <- portTypeSigM slaves
+  mastersTy <- portTypeSigM masters
   let mkRunTy bind =
-        mkRunCircuitTy nms <$>
-          (portTypeSigM nms (bOut bind)) <*>
-          (portTypeSigM nms (bIn bind))
+        mkRunCircuitTy <$>
+          (portTypeSigM (bOut bind)) <*>
+          (portTypeSigM (bIn bind))
   bindTypes <- mapM mkRunTy binds
   let runCircuitsType =
-        noLoc (HsParTy noExt (tupT bindTypes `arrTy` circuitTTy nms slavesTy mastersTy))
-          `arrTy` circuitTy nms slavesTy mastersTy
+        noLoc (HsParTy noExt (tupT bindTypes `arrTy` circuitTTy slavesTy mastersTy))
+          `arrTy` circuitTy slavesTy mastersTy
 
   allTypes <- L.use portTypes
 
-  context <- mapM (\(ty, p) -> tyEq noSrcSpan <$> (portTypeSigM nms p) <*> pure (HsTypes.hsSigWcType ty)) allTypes
+  context <- mapM (\(ty, p) -> tyEq noSrcSpan <$> (portTypeSigM p) <*> pure (HsTypes.hsSigWcType ty)) allTypes
 
   -- the full signature
   loc <- L.use circuitLoc
@@ -795,9 +795,9 @@ circuitQQExpM nms = do
 
   let numBinds = length binds
       runCircuitExprs = lamE [varP noSrcSpan "f"] $
-        (circuitConstructor nms) noSrcSpan `appE`
+        circuitConstructor noSrcSpan `appE`
           noLoc (HsPar noExt
-          (varE noSrcSpan (var "f") `appE` tupE noSrcSpan (replicate numBinds (runCircuitFun nms noSrcSpan))))
+          (varE noSrcSpan (var "f") `appE` tupE noSrcSpan (replicate numBinds (runCircuitFun noSrcSpan))))
       runCircuitBinds = tupP $ map (\i -> varP noSrcSpan ("run" <> show i)) [0 .. numBinds-1]
 
   let c = letE noSrcSpan
@@ -863,17 +863,17 @@ completeUnderscores = do
 
 -- | Transform declarations in the module by converting circuit blocks.
 transform
-    :: Bool
-    -> ExternalNames
+    :: (?nms :: ExternalNames)
+    => Bool
     -> GHC.Located (HsModule GhcPs)
     -> GHC.Hsc (GHC.Located (HsModule GhcPs))
-transform debug nms = SYB.everywhereM (SYB.mkM transform') where
+transform debug = SYB.everywhereM (SYB.mkM transform') where
   transform' :: LHsExpr GhcPs -> GHC.Hsc (LHsExpr GhcPs)
 
   -- the circuit keyword directly applied (either with parenthesis or with BlockArguments)
   transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
     | isCircuitVar circuitVar = runCircuitM $ do
-        x <- parseCircuit lappB >> completeUnderscores >> circuitQQExpM nms
+        x <- parseCircuit lappB >> completeUnderscores >> circuitQQExpM 
         when debug $ ppr x
         pure x
 
@@ -881,7 +881,7 @@ transform debug nms = SYB.everywhereM (SYB.mkM transform') where
   transform' (L _ (OpApp _xapp c@(L _ circuitVar) (L _ infixVar) appR))
     | isDollar infixVar && dollarChainIsCircuit circuitVar = do
         runCircuitM $ do
-          x <- parseCircuit appR >> completeUnderscores >> circuitQQExpM nms
+          x <- parseCircuit appR >> completeUnderscores >> circuitQQExpM
           when debug $ ppr x
           pure (dollarChainReplaceCircuit x c)
 
@@ -912,14 +912,14 @@ plugin = mkPlugin defExternalNames
 -- | Make a plugin with custom external names
 mkPlugin :: ExternalNames -> GHC.Plugin
 mkPlugin nms = GHC.defaultPlugin
-  { GHC.parsedResultAction = pluginImpl nms
+  { GHC.parsedResultAction = let ?nms = nms in pluginImpl
     -- Mark plugin as 'pure' to prevent recompilations.
   , GHC.pluginRecompile = \_cliOptions -> pure GHC.NoForceRecompile
   }
 
 -- | The actual implementation.
-pluginImpl :: ExternalNames -> [GHC.CommandLineOption] -> GHC.ModSummary -> GHC.HsParsedModule -> GHC.Hsc GHC.HsParsedModule
-pluginImpl nms cliOptions _modSummary m = do
+pluginImpl :: (?nms :: ExternalNames) => [GHC.CommandLineOption] -> GHC.ModSummary -> GHC.HsParsedModule -> GHC.Hsc GHC.HsParsedModule
+pluginImpl cliOptions _modSummary m = do
     -- cli options are activated by -fplugin-opt=CircuitNotation:debug
     debug <- case cliOptions of
       []        -> pure False
@@ -929,7 +929,7 @@ pluginImpl nms cliOptions _modSummary m = do
                 "CircuitNotation: unknown cli options " <> show cliOptions
               pure False
     hpm_module' <- do
-      transform debug nms (GHC.hpm_module m)
+      transform debug (GHC.hpm_module m)
     let module' = m { GHC.hpm_module = hpm_module' }
     return module'
 
@@ -956,16 +956,6 @@ data ExternalNames = ExternalNames
   , circuitTTyCon :: GHC.RdrName
   , runCircuitName :: GHC.RdrName
   , fwdBwdCon :: GHC.RdrName
-
-  , vecCons :: GHC.RdrName
-  -- ^ Vector cons. Typically 'Clash.Sized.Vector.:>'
-  , vecNil :: GHC.RdrName
-  -- ^ Vector nil. Typically 'Clash.Sized.Vector.Nil'
-  , vecTyCon :: GHC.RdrName
-  -- ^ Vector type constructor. Typically 'Clash.Sized.Vector.Vec'
-
-  , signalTyCon :: GHC.RdrName
-  -- ^ Signal type constructor. Typically 'Clash.Signal.Signal'
   }
 
 defExternalNames :: ExternalNames
@@ -975,10 +965,4 @@ defExternalNames = ExternalNames
   , circuitTTyCon = GHC.Unqual (OccName.mkTcOcc "CircuitT")
   , runCircuitName = GHC.Unqual (OccName.mkVarOcc "runCircuit")
   , fwdBwdCon = GHC.Unqual (OccName.mkDataOcc ":->")
-
-  , vecCons = GHC.Unqual (OccName.mkDataOcc ":>")
-  , vecNil = GHC.Unqual (OccName.mkDataOcc "Nil")
-  , vecTyCon = GHC.Unqual (OccName.mkTcOcc "Vec")
-
-  , signalTyCon = GHC.Unqual (OccName.mkTcOcc "Signal")
   }
