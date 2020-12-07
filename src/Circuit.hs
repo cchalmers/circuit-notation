@@ -22,22 +22,8 @@ This file contains the 'Circuit' type, that the notation describes.
 
 module Circuit where
 
+import Clash.Prelude (Domain, Signal, Vec(..))
 import Data.Default
-import GHC.TypeLits
-import Unsafe.Coerce
-
-data Domain
-
--- | Infinite sequence of values.
-data Signal (dom :: Domain) a = a :- Signal dom a
-  deriving Functor
-
-instance Default a => Default (Signal dom a) where
-  def = pure def
-
-instance Applicative (Signal dom) where
-  pure a = a :- pure a
-  (f :- fs) <*> (a :- as) = f a :- (fs <*> as)
 
 type family Fwd a
 type family Bwd a
@@ -62,26 +48,6 @@ instance Default DFS2M where
 
 type instance Fwd (DF dom a) = Signal dom (DFM2S a)
 type instance Bwd (DF dom a) = Signal dom DFS2M
-
-data Vec n a where
-  Nil :: Vec 0 a
-  Cons :: a -> Vec n a -> Vec (n + 1) a
-
-headV :: Vec (n + 1) a -> a
-headV (x `Cons` _) = x
-headV Nil = error ""
-tailV :: forall n a. Vec (n + 1) a -> Vec n a
-tailV (_ `Cons` xs) = unsafeCoerce xs
-tailV Nil = error ""
-
-pattern (:>) :: a -> Vec n a -> Vec (n + 1) a
-pattern (:>) x xs <- ((\ys -> (headV ys, tailV ys)) -> (x,xs))
-  where
-      (:>) x xs = Cons x xs
-infixr 5 :>
-
-myVec :: Vec 2 Int
-myVec = 1 :> 2 :> Nil
 
 type instance Fwd (Vec n a) = Vec n (Fwd a)
 type instance Bwd (Vec n a) = Vec n (Bwd a)
