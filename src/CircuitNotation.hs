@@ -509,6 +509,8 @@ bindMaster (L loc expr) = case expr of
     | rdrName == thName '() -> Tuple []
     | rdrName == thName '[] -> Vec vloc []
     | otherwise -> Ref (PortName vloc (fromRdrName rdrName))
+  HsApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig
+    | OccName.occNameString occ == "Signal" -> SignalExpr sig
   ExplicitTuple _ tups _ -> let
     vals = fmap (\(L _ (Present _ e)) -> e) tups
     in Tuple $ fmap bindMaster vals
@@ -873,7 +875,7 @@ transform debug = SYB.everywhereM (SYB.mkM transform') where
   -- the circuit keyword directly applied (either with parenthesis or with BlockArguments)
   transform' (L _ (HsApp _xapp (L _ circuitVar) lappB))
     | isCircuitVar circuitVar = runCircuitM $ do
-        x <- parseCircuit lappB >> completeUnderscores >> circuitQQExpM 
+        x <- parseCircuit lappB >> completeUnderscores >> circuitQQExpM
         when debug $ ppr x
         pure x
 

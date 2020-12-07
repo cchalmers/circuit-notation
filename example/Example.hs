@@ -32,6 +32,8 @@ module Example where
 
 import Circuit
 
+import Clash.Prelude (Signal, Vec(..))
+
 idCircuit :: Circuit a a
 idCircuit = idC
 
@@ -52,7 +54,7 @@ noLambda = circuit $ do
   i <- circuitA
   idC -< i
 
--- noLambda = 
+-- noLambda =
 --   let
 --     inferenceHelper ::
 --       () =>

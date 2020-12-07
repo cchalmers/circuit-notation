@@ -14,7 +14,7 @@ extra-source-files:  CHANGELOG.md, README.md
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     CircuitNotation
+  exposed-modules:     CircuitNotation Circuit
   -- other-modules:
   -- other-extensions:
   build-depends:
@@ -22,7 +22,8 @@ library
     , clash-prelude >= 1.0
     , containers
     , data-default
-    , ghc >=8.6
+    -- GHC 8.8 explicitly not supported
+    , ghc (>=8.6 && <8.8) || (>=8.10 && < 9.0)
     , syb
     , lens
     , mtl
