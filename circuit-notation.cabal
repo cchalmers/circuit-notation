@@ -22,8 +22,7 @@ library
     , clash-prelude >= 1.0
     , containers
     , data-default
-    -- GHC 8.8 explicitly not supported
-    , ghc (>=8.6 && <8.8) || (>=8.10 && < 9.0)
+    , ghc >=8.6 && <8.8
     , syb
     , lens
     , mtl
