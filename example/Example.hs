@@ -10,12 +10,16 @@
 This file contains examples of using the Circuit Notation.
 -}
 
-{-# LANGUAGE Arrows              #-}
+{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE BlockArguments      #-}
 {-# LANGUAGE DeriveFunctor       #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE DataKinds        #-}
+
+#if __GLASGOW_HASKELL__ < 810
+{-# LANGUAGE Arrows #-}
+#endif
 
 {-# OPTIONS -fplugin=CircuitNotation #-}
 {-# OPTIONS -fplugin-opt=CircuitNotation:debug #-}
@@ -37,8 +41,16 @@ import Clash.Prelude (Signal, Vec(..))
 idCircuit :: Circuit a a
 idCircuit = idC
 
-swapC :: Circuit (a,b) (b,a)
-swapC = id $ circuit $ \ ~(a,b) -> ~(b,a)
+#if __GLASGOW_HASKELL__ < 810
+swapC0 :: Circuit (a,b) (b,a)
+swapC0 = id $ circuit $ \ ~(a,b) -> ~(b,a)
+#endif
+
+swapC1 :: Circuit (a,b) (b,a)
+swapC1 = id $ circuit $ \ ~(a,b) -> (b,a)
+
+swapC2 :: Circuit (a,b) (b,a)
+swapC2 = id $ circuit $ \ (a,b) -> (b,a)
 
 circuitA :: Circuit () (DF domain Int)
 circuitA = Circuit (\_ -> () :-> pure (DFM2S True 3))

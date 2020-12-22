@@ -114,6 +114,12 @@ isDollar = \case
   HsVar _ (L _ v) -> v == GHC.mkVarUnqual "$"
   _               -> False
 
+-- | Is (-<)?
+isFletching :: p ~ GhcPs => HsExpr p -> Bool
+isFletching = \case
+  HsVar _ (L _ v) -> v == GHC.mkVarUnqual "-<"
+  _               -> False
+
 imap :: (Int -> a -> b) -> [a] -> [b]
 imap f = zipWith f [0 ..]
 
@@ -434,8 +440,10 @@ circuitBody = \case
           L _ (HsArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) arg _ _)
             | OccName.occNameString occ == "idC" -> circuitMasters .= bindMaster arg
 #else
-          L _ (HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) arg _ _)))))
-            | OccName.occNameString occ == "idC" -> circuitMasters .= bindMaster arg
+          L _ (OpApp _ (L _ (HsVar _ (L _ (GHC.Unqual occ)))) (L _ op) port)
+            | isFletching op
+            , OccName.occNameString occ == "idC" -> do
+                circuitMasters .= bindMaster port
 #endif
 
           -- Otherwise create a binding and use that as the master. This is equivalent to changing
@@ -521,6 +529,7 @@ bindMaster (L loc expr) = case expr of
   ExprWithTySig ty expr' -> PortType ty (bindMaster expr')
   ELazyPat _ expr' -> Lazy loc (bindMaster expr')
 #else
+  -- XXX: Untested?
   HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig _ _))))
     | OccName.occNameString occ == "Signal" -> SignalExpr sig
   ExprWithTySig _ expr' ty -> PortType ty (bindMaster expr')
@@ -544,7 +553,7 @@ bodyBinding
   -> GenLocated loc (HsExpr p)
   -- ^ the statement with an optional @-<@
   -> CircuitM ()
-bodyBinding mInput lexpr@(L loc expr) =
+bodyBinding mInput lexpr@(L loc expr) = do
   case expr of
 #if __GLASGOW_HASKELL__ < 810
     HsArrApp _xhsArrApp circuit port HsFirstOrderApp True ->
@@ -554,7 +563,7 @@ bodyBinding mInput lexpr@(L loc expr) =
         , bIn      = fromMaybe (Tuple []) mInput
         }]
 #else
-    HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xhsArrApp circuit port HsFirstOrderApp True)))) ->
+    OpApp _ circuit (L _ op) port | isFletching op -> do
       circuitBinds <>= [Binding
         { bCircuit = circuit
         , bOut     = bindMaster port
