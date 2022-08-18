@@ -12,8 +12,6 @@ Notation for describing the 'Circuit' type.
 
 {-# LANGUAGE BlockArguments             #-}
 {-# LANGUAGE CPP                        #-}
-{-# LANGUAGE DeriveFoldable             #-}
-{-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveTraversable          #-}
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams             #-}
@@ -39,36 +37,60 @@ import           Control.Exception
 import qualified Data.Data              as Data
 import           Data.Default
 import           Data.Maybe             (fromMaybe)
+#if __GLASGOW_HASKELL__ >= 900
+#else
 import           SrcLoc
+#endif
 import           System.IO.Unsafe
 import           Data.Typeable
 
 -- ghc
+import qualified Language.Haskell.TH    as TH
+
+#if __GLASGOW_HASKELL__ >= 900
+import           GHC.Data.Bag
+import           GHC.Data.FastString       (mkFastString, unpackFS)
+import           GHC.Driver.Types          (throwOneError)
+import           GHC.Plugins               (PromotionFlag(NotPromoted))
+import           GHC.Types.SrcLoc
+import qualified GHC.Data.FastString       as GHC
+import qualified GHC.Driver.Plugins        as GHC
+import qualified GHC.Driver.Session        as GHC
+import qualified GHC.Driver.Types          as GHC
+import qualified GHC.Parser.Annotation     as GHC
+import qualified GHC.Types.Basic           as GHC
+import qualified GHC.Types.Name.Occurrence as OccName
+import qualified GHC.Types.Name.Reader     as GHC
+import qualified GHC.Types.SrcLoc          as GHC
+import qualified GHC.Utils.Error           as Err
+import qualified GHC.Utils.Outputable      as GHC
+import qualified GHC.Utils.Outputable      as Outputable
+#else
 import           Bag
 import qualified ErrUtils               as Err
 import           FastString             (mkFastString, unpackFS)
 import qualified GhcPlugins             as GHC
 import           HscTypes               (throwOneError)
-import qualified Language.Haskell.TH    as TH
 import qualified OccName
 import qualified Outputable
+#endif
 
 #if __GLASGOW_HASKELL__ > 808
 import qualified GHC.ThToHs             as Convert
 import           GHC.Hs
-import           GHC.Hs.Types           as HsTypes
 #else
 import qualified Convert
 import           HsSyn                  hiding (noExt)
 import           HsExtension            (GhcPs, NoExt (..))
-import qualified HsTypes
 #endif
 
-#if __GLASGOW_HASKELL__ > 806
+#if __GLASGOW_HASKELL__ <= 806
+import           PrelNames              (eqTyCon_RDR)
+#elif __GLASGOW_HASKELL__ <= 810
 import           TysWiredIn             (eqTyCon_RDR)
 import           BasicTypes             (PromotionFlag( NotPromoted ))
 #else
-import           PrelNames              (eqTyCon_RDR)
+import           GHC.Builtin.Types      (eqTyCon_RDR)
 #endif
 
 -- clash-prelude
@@ -103,22 +125,20 @@ import qualified Data.Generics          as SYB
 
 
 -- Utils ---------------------------------------------------------------
+isSomeVar :: (p ~ GhcPs) => GHC.FastString -> HsExpr p -> Bool
+isSomeVar s = \case
+  HsVar _ (L _ v) -> v == GHC.mkVarUnqual s
+  _               -> False
 
 isCircuitVar :: p ~ GhcPs => HsExpr p -> Bool
-isCircuitVar = \case
-  HsVar _ (L _ v) -> v == GHC.mkVarUnqual "circuit"
-  _               -> False
+isCircuitVar = isSomeVar "circuit"
 
 isDollar :: p ~ GhcPs => HsExpr p -> Bool
-isDollar = \case
-  HsVar _ (L _ v) -> v == GHC.mkVarUnqual "$"
-  _               -> False
+isDollar = isSomeVar "$"
 
 -- | Is (-<)?
 isFletching :: p ~ GhcPs => HsExpr p -> Bool
-isFletching = \case
-  HsVar _ (L _ v) -> v == GHC.mkVarUnqual "-<"
-  _               -> False
+isFletching = isSomeVar "-<"
 
 imap :: (Int -> a -> b) -> [a] -> [b]
 imap f = zipWith f [0 ..]
@@ -136,7 +156,7 @@ noExt = NoExt
 -- | The name given to a 'port', i.e. the name of a variable either to the left of a '<-' or to the
 --   right of a '-<'.
 data PortName = PortName SrcSpan GHC.FastString
-  deriving (Eq, Ord)
+  deriving (Eq)
 
 instance Show PortName where
   show (PortName _ fs) = GHC.unpackFS fs
@@ -148,7 +168,7 @@ data PortDescription a
     | Lazy SrcSpan (PortDescription a)
     | SignalExpr (LHsExpr GhcPs)
     | SignalPat (LPat GhcPs)
-    | PortType (LHsSigWcType GhcPs) (PortDescription a)
+    | PortType (LHsType GhcPs) (PortDescription a)
     | PortErr SrcSpan Err.MsgDoc
     deriving (Foldable, Functor, Traversable)
 
@@ -190,7 +210,7 @@ data CircuitState dec exp nm = CircuitState
     -- ^ ports bound at the first lambda of a circuit
     , _portVarTypes :: Map GHC.FastString (SrcSpan, LHsType GhcPs)
     -- ^ types of single variable ports
-    , _portTypes :: [(LHsSigWcType GhcPs, PortDescription nm)]
+    , _portTypes :: [(LHsType GhcPs, PortDescription nm)]
     -- ^ type of more 'complicated' things (very far from vigorous)
     , _uniqueCounter :: Int
     -- ^ counter to keep internal variables "unique"
@@ -238,6 +258,13 @@ errM loc msg = do
 -- It's very possible that most of these are already in the ghc library in some form. It's not the
 -- easiest library to discover these kind of functions.
 
+conPatIn :: (p ~ GhcPs) => Located GHC.RdrName -> HsConPatDetails p -> Pat p
+#if __GLASGOW_HASKELL__ >= 900
+conPatIn loc con = ConPat noExtField loc con
+#else
+conPatIn loc con = ConPatIn loc con
+#endif
+
 tupP :: p ~ GhcPs => [LPat p] -> LPat p
 tupP [pat] = pat
 tupP pats = noLoc $ TuplePat noExt pats GHC.Boxed
@@ -247,7 +274,7 @@ vecP srcLoc = \case
   [] -> go srcLoc []
   as -> L srcLoc $ ParPat noExt $ go srcLoc as
   where
-  go loc (p@(L l _):pats) = L loc $ ConPatIn (L l (thName '(:>))) (InfixCon p (go loc pats))
+  go loc (p@(L l _):pats) = L loc $ conPatIn (L l (thName '(:>))) (InfixCon p (go loc pats))
   go loc [] = L loc $ WildPat noExt
 
 varP :: p ~ GhcPs => SrcSpan -> String -> LPat p
@@ -337,8 +364,13 @@ portTypeSigM = \case
 
 -- | Generate a "unique" name by appending the location as a string.
 genLocName :: SrcSpan -> String -> String
-genLocName (GHC.RealSrcSpan rss) prefix = prefix <> "_" <>
-  foldMap (\f -> show (f rss)) [srcSpanStartLine, srcSpanEndLine, srcSpanStartCol, srcSpanEndCol]
+#if __GLASGOW_HASKELL__ >= 900
+genLocName (GHC.RealSrcSpan rss _) prefix =
+#else
+genLocName (GHC.RealSrcSpan rss) prefix =
+#endif
+  prefix <> "_" <>
+    foldMap (\f -> show (f rss)) [srcSpanStartLine, srcSpanEndLine, srcSpanStartCol, srcSpanEndCol]
 genLocName _ prefix = prefix
 
 -- | Extract a simple lambda into inputs and body.
@@ -478,7 +510,11 @@ handleStmtM (L loc stmt) = case stmt of
       _ -> errM loc ("Unhandled let statement" <> show (Data.toConstr letBind))
   BodyStmt _xbody body _idr _idr' ->
     bodyBinding Nothing body
+#if __GLASGOW_HASKELL__ >= 900
+  BindStmt _ bind body ->
+#else
   BindStmt _xbody bind body _idr _idr' ->
+#endif
     bodyBinding (Just $ bindSlave bind) body
   _ -> errM loc "Unhandled stmt"
 
@@ -488,16 +524,26 @@ bindSlave (L loc expr) = case expr of
   VarPat _ (L _ rdrName) -> Ref (PortName loc (fromRdrName rdrName))
   TuplePat _ lpat _ -> Tuple $ fmap bindSlave lpat
   ParPat _ lpat -> bindSlave lpat
+#if __GLASGOW_HASKELL__ >= 900
+  ConPat _ (L _ (GHC.Unqual occ)) (PrefixCon [lpat])
+#else
   ConPatIn (L _ (GHC.Unqual occ)) (PrefixCon [lpat])
+#endif
     | OccName.occNameString occ == "Signal" -> SignalPat lpat
   -- empty list is done as the constructor
+#if __GLASGOW_HASKELL__ >= 900
+  ConPat _ (L _ rdr) _
+#else
   ConPatIn (L _ rdr) _
+#endif
     | rdr == thName '[] -> Vec loc []
     | rdr == thName '() -> Tuple []
 #if __GLASGOW_HASKELL__ < 810
-  SigPat ty port -> PortType ty (bindSlave port)
+  SigPat ty port -> PortType (hsSigWcType ty) (bindSlave port)
+#elif __GLASGOW_HASKELL__ < 900
+  SigPat _ port ty -> PortType (hsSigWcType ty) (bindSlave port)
 #else
-  SigPat _ port ty -> PortType ty (bindSlave port)
+  SigPat _ port ty -> PortType (hsps_body ty) (bindSlave port)
 #endif
   LazyPat _ lpat -> Lazy loc (bindSlave lpat)
   ListPat _ pats -> Vec loc (map bindSlave pats)
@@ -526,13 +572,13 @@ bindMaster (L loc expr) = case expr of
 #if __GLASGOW_HASKELL__ < 810
   HsArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig _ _
     | OccName.occNameString occ == "Signal" -> SignalExpr sig
-  ExprWithTySig ty expr' -> PortType ty (bindMaster expr')
+  ExprWithTySig ty expr' -> PortType (hsSigWcType ty) (bindMaster expr')
   ELazyPat _ expr' -> Lazy loc (bindMaster expr')
 #else
   -- XXX: Untested?
   HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig _ _))))
     | OccName.occNameString occ == "Signal" -> SignalExpr sig
-  ExprWithTySig _ expr' ty -> PortType ty (bindMaster expr')
+  ExprWithTySig _ expr' ty -> PortType (hsSigWcType ty) (bindMaster expr')
 #endif
 
   -- OpApp _xapp (L _ circuitVar) (L _ infixVar) appR -> k
@@ -636,11 +682,11 @@ bindOutputs
   -> PortDescription PortName
   -- ^ master ports
   -> LPat p
-bindOutputs dflags Fwd slaves masters = noLoc $ ConPatIn (noLoc (fwdBwdCon ?nms)) (InfixCon m2s s2m)
+bindOutputs dflags Fwd slaves masters = noLoc $ conPatIn (noLoc (fwdBwdCon ?nms)) (InfixCon m2s s2m)
   where
   m2s = bindWithSuffix dflags "_Fwd" masters
   s2m = bindWithSuffix dflags "_Bwd" slaves
-bindOutputs dflags Bwd slaves masters = noLoc $ ConPatIn (noLoc (fwdBwdCon ?nms)) (InfixCon m2s s2m)
+bindOutputs dflags Bwd slaves masters = noLoc $ conPatIn (noLoc (fwdBwdCon ?nms)) (InfixCon m2s s2m)
   where
   m2s = bindWithSuffix dflags "_Bwd" masters
   s2m = bindWithSuffix dflags "_Fwd" slaves
@@ -707,8 +753,15 @@ unsnoc [x] = Just ([], x)
 unsnoc (x:xs) = Just (x:a, b)
     where Just (a,b) = unsnoc xs
 
+hsFunTy :: (p ~ GhcPs) => LHsType p -> LHsType p -> HsType p
+hsFunTy =
+  HsFunTy noExt
+#if __GLASGOW_HASKELL__ >= 900
+    (HsUnrestrictedArrow GHC.NormalSyntax)
+#endif
+
 arrTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
-arrTy a b = noLoc $ HsFunTy noExt (parenthesizeHsType GHC.funPrec a) (parenthesizeHsType GHC.funPrec b)
+arrTy a b = noLoc $ hsFunTy (parenthesizeHsType GHC.funPrec a) (parenthesizeHsType GHC.funPrec b)
 
 varT :: SrcSpan -> String -> LHsType GhcPs
 varT loc nm = L loc (HsTyVar noExt NotPromoted (L loc (tyVar nm)))
@@ -724,11 +777,11 @@ circuitTTy a b = (conT noSrcSpan (circuitTTyCon ?nms)) `appTy` a `appTy` b
 
 -- a b -> (Circuit a b -> CircuitT a b)
 mkRunCircuitTy :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType p -> LHsType p -> LHsType p
-mkRunCircuitTy a b = noLoc $ HsFunTy noExt (circuitTy a b) (circuitTTy a b)
+mkRunCircuitTy a b = noLoc $ hsFunTy (circuitTy a b) (circuitTTy a b)
 
 -- a b -> (CircuitT a b -> Circuit a b)
 mkCircuitTy :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType p -> LHsType p -> LHsType p
-mkCircuitTy a b = noLoc $ HsFunTy noExt (circuitTTy a b) (circuitTy a b)
+mkCircuitTy a b = noLoc $ hsFunTy (circuitTTy a b) (circuitTy a b)
 
 -- perhaps this should happen on construction
 gatherTypes
@@ -738,7 +791,7 @@ gatherTypes
 gatherTypes = L.traverseOf_ L.cosmos addTypes
   where
     addTypes = \case
-      PortType ty (Ref (PortName loc fs)) -> portVarTypes . L.at fs ?= (loc, hsSigWcType ty)
+      PortType ty (Ref (PortName loc fs)) -> portVarTypes . L.at fs ?= (loc, ty)
       PortType ty p -> portTypes <>= [(ty, p)]
       _             -> pure ()
 
@@ -792,7 +845,7 @@ circuitQQExpM = do
 
   allTypes <- L.use portTypes
 
-  context <- mapM (\(ty, p) -> tyEq noSrcSpan <$> (portTypeSigM p) <*> pure (HsTypes.hsSigWcType ty)) allTypes
+  context <- mapM (\(ty, p) -> tyEq noSrcSpan <$> (portTypeSigM p) <*> pure ty) allTypes
 
   -- the full signature
   loc <- L.use circuitLoc
@@ -876,8 +929,13 @@ completeUnderscores = do
 transform
     :: (?nms :: ExternalNames)
     => Bool
+#if __GLASGOW_HASKELL__ >= 900
+    -> GHC.Located HsModule
+    -> GHC.Hsc (GHC.Located HsModule)
+#else
     -> GHC.Located (HsModule GhcPs)
     -> GHC.Hsc (GHC.Located (HsModule GhcPs))
+#endif
 transform debug = SYB.everywhereM (SYB.mkM transform') where
   transform' :: LHsExpr GhcPs -> GHC.Hsc (LHsExpr GhcPs)
 
