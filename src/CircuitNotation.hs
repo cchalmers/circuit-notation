@@ -101,22 +101,20 @@ import qualified Data.Generics          as SYB
 
 
 -- Utils ---------------------------------------------------------------
+isSomeVar :: (p ~ GhcPs) => GHC.FastString -> HsExpr p -> Bool
+isSomeVar s = \case
+  HsVar _ (L _ v) -> v == GHC.mkVarUnqual s
+  _               -> False
 
 isCircuitVar :: p ~ GhcPs => HsExpr p -> Bool
-isCircuitVar = \case
-  HsVar _ (L _ v) -> v == GHC.mkVarUnqual "circuit"
-  _               -> False
+isCircuitVar = isSomeVar "circuit"
 
 isDollar :: p ~ GhcPs => HsExpr p -> Bool
-isDollar = \case
-  HsVar _ (L _ v) -> v == GHC.mkVarUnqual "$"
-  _               -> False
+isDollar = isSomeVar "$"
 
 -- | Is (-<)?
 isFletching :: p ~ GhcPs => HsExpr p -> Bool
-isFletching = \case
-  HsVar _ (L _ v) -> v == GHC.mkVarUnqual "-<"
-  _               -> False
+isFletching = isSomeVar "-<"
 
 imap :: (Int -> a -> b) -> [a] -> [b]
 imap f = zipWith f [0 ..]
