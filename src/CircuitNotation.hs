@@ -12,8 +12,6 @@ Notation for describing the 'Circuit' type.
 
 {-# LANGUAGE BlockArguments             #-}
 {-# LANGUAGE CPP                        #-}
-{-# LANGUAGE DeriveFoldable             #-}
-{-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveTraversable          #-}
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams             #-}
