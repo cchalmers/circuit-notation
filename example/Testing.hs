@@ -10,7 +10,6 @@
 For testing the circuit notation.
 -}
 
-{-# LANGUAGE Arrows                    #-}
 {-# LANGUAGE BlockArguments            #-}
 {-# LANGUAGE GADTs                     #-}
 -- {-# LANGUAGE NoMonomorphismRestriction #-}
@@ -24,9 +23,11 @@ For testing the circuit notation.
 {-# OPTIONS -Wno-unused-local-binds #-}
 {-# OPTIONS -Wno-missing-signatures #-}
 
-module Example where
+module Testing where
 
 import           Circuit
+import           Clash.Prelude hiding (undefined)
+import           Clash.Signal.Internal
 -- import Data.Default
 
 -- no c =
