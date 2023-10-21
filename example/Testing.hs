@@ -10,23 +10,25 @@
 For testing the circuit notation.
 -}
 
-{-# LANGUAGE Arrows                    #-}
-{-# LANGUAGE BlockArguments            #-}
-{-# LANGUAGE GADTs                     #-}
--- {-# LANGUAGE NoMonomorphismRestriction #-}
-{-# LANGUAGE ScopedTypeVariables       #-}
-{-# LANGUAGE DataKinds       #-}
-
--- For testing:
-{-# LANGUAGE ScopedTypeVariables  #-}
+{-# LANGUAGE CPP #-}
+#if __GLASGOW_HASKELL__ < 810
+{-# LANGUAGE Arrows #-}
+#endif
+{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds#-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {-# OPTIONS -fplugin=CircuitNotation #-}
 {-# OPTIONS -Wno-unused-local-binds #-}
 {-# OPTIONS -Wno-missing-signatures #-}
 
-module Example where
+module Testing where
 
 import           Circuit
+import           Clash.Prelude hiding (undefined)
+import           Clash.Signal.Internal
 -- import Data.Default
 
 -- no c =
