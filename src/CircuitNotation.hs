@@ -165,6 +165,7 @@ data PortDescription a
     = Tuple [PortDescription a]
     | Vec SrcSpan [PortDescription a]
     | Ref a
+    | RefMulticast a
     | Lazy SrcSpan (PortDescription a)
     | SignalExpr (LHsExpr GhcPs)
     | SignalPat (LPat GhcPs)
@@ -349,6 +350,7 @@ portTypeSigM = \case
     L.use (portVarTypes . L.at fs) <&> \case
       Nothing -> varT loc (GHC.unpackFS fs <> "Ty")
       Just (_sigLoc, sig) -> sig
+  RefMulticast p -> portTypeSigM (Ref p)
   PortErr loc msgdoc -> do
     dflags <- GHC.getDynFlags
     unsafePerformIO . throwOneError $
@@ -643,35 +645,59 @@ checkCircuit = do
       topNames = portNames Slave slaves <> portNames Master masters
       nameMap = Map.fromListWith mappend $ topNames <> concatMap bindingNames binds
 
-  L.iforM_ nameMap \name occ ->
+  duplicateMasters <- concat <$> L.iforM nameMap \name occ ->
     case occ of
-      ([_], [_]) -> pure ()
+      ([_], [_]) -> pure []
       (ss, ms) -> do
         unless (head (unpackFS name) == '_') $ do
           when (null ms) $ errM (head ss) $ "Slave port " <> show name <> " has no associated master"
           when (null ss) $ errM (head ms) $ "Master port " <> show name <> " has no associated slave"
         -- would be nice to show locations of all occurrences here, not sure how to do that while
         -- keeping ghc api
-        when (length ms > 1) $
-          errM (head ms) $ "Master port " <> show name <> " defined " <> show (length ms) <> " times"
         when (length ss > 1) $
           errM (head ss) $ "Slave port " <> show name <> " defined " <> show (length ss) <> " times"
 
+        -- if master is defined multiple times, we try to broadcast it
+        if length ms > 1
+          then pure [name]
+          else pure []
+
+  let
+    modifyMulticast = \case
+      Ref p@(PortName _ a) | a `elem` duplicateMasters -> RefMulticast p
+      p -> p
+
+  -- update relevant master ports to be multicast
+  circuitSlaves %= L.transform modifyMulticast
+  circuitMasters %= L.transform modifyMulticast
+  circuitBinds . L.mapped %= \b -> b
+    { bIn = L.transform modifyMulticast (bIn b),
+      bOut = L.transform modifyMulticast (bOut b)
+    }
+
 -- Creating ------------------------------------------------------------
 
-bindWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => GHC.DynFlags -> String -> PortDescription PortName -> LPat p
-bindWithSuffix dflags suffix = \case
-  Tuple ps -> tildeP noSrcSpan $ tupP $ fmap (bindWithSuffix dflags suffix) ps
-  Vec s ps -> vecP s $ fmap (bindWithSuffix dflags suffix) ps
-  Ref (PortName loc fs) -> varP loc (GHC.unpackFS fs <> suffix)
+data Direc = Fwd | Bwd deriving Show
+
+bindWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => GHC.DynFlags -> Direc -> PortDescription PortName -> LPat p
+bindWithSuffix dflags dir = \case
+  Tuple ps -> tildeP noSrcSpan $ tupP $ fmap (bindWithSuffix dflags dir) ps
+  Vec s ps -> vecP s $ fmap (bindWithSuffix dflags dir) ps
+  Ref (PortName loc fs) -> varP loc (GHC.unpackFS fs <> "_" <> show dir)
+  RefMulticast (PortName loc fs) -> case dir of
+    Bwd -> L loc (WildPat noExt)
+    Fwd -> varP loc (GHC.unpackFS fs <> "_" <> show dir)
   PortErr loc msgdoc -> unsafePerformIO . throwOneError $
     Err.mkLongErrMsg dflags loc Outputable.alwaysQualify (Outputable.text "Unhandled bind") msgdoc
-  Lazy loc p -> tildeP loc $ bindWithSuffix dflags suffix p
+  Lazy loc p -> tildeP loc $ bindWithSuffix dflags dir p
   SignalExpr (L l _) -> L l (WildPat noExt)
   SignalPat lpat -> lpat
-  PortType _ p -> bindWithSuffix dflags suffix p
+  PortType _ p -> bindWithSuffix dflags dir p
 
-data Direc = Fwd | Bwd
+revDirec :: Direc -> Direc
+revDirec = \case
+  Fwd -> Bwd
+  Bwd -> Fwd
 
 bindOutputs
   :: (p ~ GhcPs, ?nms :: ExternalNames)
@@ -682,26 +708,25 @@ bindOutputs
   -> PortDescription PortName
   -- ^ master ports
   -> LPat p
-bindOutputs dflags Fwd slaves masters = noLoc $ conPatIn (noLoc (fwdBwdCon ?nms)) (InfixCon m2s s2m)
+bindOutputs dflags direc slaves masters = noLoc $ conPatIn (noLoc (fwdBwdCon ?nms)) (InfixCon m2s s2m)
   where
-  m2s = bindWithSuffix dflags "_Fwd" masters
-  s2m = bindWithSuffix dflags "_Bwd" slaves
-bindOutputs dflags Bwd slaves masters = noLoc $ conPatIn (noLoc (fwdBwdCon ?nms)) (InfixCon m2s s2m)
-  where
-  m2s = bindWithSuffix dflags "_Bwd" masters
-  s2m = bindWithSuffix dflags "_Fwd" slaves
+  m2s = bindWithSuffix dflags direc masters
+  s2m = bindWithSuffix dflags (revDirec direc) slaves
 
-expWithSuffix :: p ~ GhcPs => String -> PortDescription PortName -> LHsExpr p
-expWithSuffix suffix = \case
-  Tuple ps -> tupE noSrcSpan $ fmap (expWithSuffix suffix) ps
-  Vec s ps -> vecE s $ fmap (expWithSuffix suffix) ps
-  Ref (PortName loc fs)   -> varE loc (var $ GHC.unpackFS fs <> suffix)
+expWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => Direc -> PortDescription PortName -> LHsExpr p
+expWithSuffix dir = \case
+  Tuple ps -> tupE noSrcSpan $ fmap (expWithSuffix dir) ps
+  Vec s ps -> vecE s $ fmap (expWithSuffix dir) ps
+  Ref (PortName loc fs)   -> varE loc (var $ GHC.unpackFS fs <> "_" <> show dir)
+  RefMulticast (PortName loc fs) -> case dir of
+    Bwd -> varE noSrcSpan (trivialBwd ?nms)
+    Fwd -> varE loc (var $ GHC.unpackFS fs <> "_" <> show dir)
   -- laziness only affects the pattern side
-  Lazy _ p   -> expWithSuffix suffix p
+  Lazy _ p   -> expWithSuffix dir p
   PortErr _ _ -> error "expWithSuffix PortErr!"
   SignalExpr lexpr -> lexpr
   SignalPat (L l _) -> tupE l []
-  PortType _ p -> expWithSuffix suffix p
+  PortType _ p -> expWithSuffix dir p
 
 createInputs
   :: (p ~ GhcPs, ?nms :: ExternalNames)
@@ -711,14 +736,10 @@ createInputs
   -> PortDescription PortName
   -- ^ master ports
   -> LHsExpr p
-createInputs Fwd slaves masters = noLoc $ OpApp noExt s2m (varE noSrcSpan (fwdBwdCon ?nms)) m2s
+createInputs dir slaves masters = noLoc $ OpApp noExt s2m (varE noSrcSpan (fwdBwdCon ?nms)) m2s
   where
-  m2s = expWithSuffix "_Bwd" masters
-  s2m = expWithSuffix "_Fwd" slaves
-createInputs Bwd slaves masters = noLoc $ OpApp noExt s2m (varE noSrcSpan (fwdBwdCon ?nms)) m2s
-  where
-  m2s = expWithSuffix "_Fwd" masters
-  s2m = expWithSuffix "_Bwd" slaves
+  m2s = expWithSuffix (revDirec dir) masters
+  s2m = expWithSuffix dir slaves
 
 decFromBinding :: (p ~ GhcPs, ?nms :: ExternalNames) => GHC.DynFlags -> Int -> Binding (LHsExpr p) PortName -> HsBind p
 decFromBinding dflags i Binding {..} = do
@@ -1025,6 +1046,7 @@ data ExternalNames = ExternalNames
   , circuitTTyCon :: GHC.RdrName
   , runCircuitName :: GHC.RdrName
   , fwdBwdCon :: GHC.RdrName
+  , trivialBwd :: GHC.RdrName
   }
 
 defExternalNames :: ExternalNames
@@ -1034,4 +1056,5 @@ defExternalNames = ExternalNames
   , circuitTTyCon = GHC.Unqual (OccName.mkTcOcc "CircuitT")
   , runCircuitName = GHC.Unqual (OccName.mkVarOcc "runCircuit")
   , fwdBwdCon = GHC.Unqual (OccName.mkDataOcc ":->")
+  , trivialBwd = GHC.Unqual (OccName.mkVarOcc "unitBwd")
   }

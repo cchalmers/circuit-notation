@@ -38,4 +38,4 @@ Test-Suite library-testsuite
   type:             exitcode-stdio-1.0
   main-is:          unittests.hs
   hs-source-dirs:   tests
-  build-depends:    base, circuit-notation
+  build-depends:    base, circuit-notation, clash-prelude >= 1.0
