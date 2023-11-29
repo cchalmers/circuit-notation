@@ -76,6 +76,9 @@ class TrivialBwd a where
 instance TrivialBwd () where
   unitBwd = ()
 
+instance (TrivialBwd a) => TrivialBwd (Signal dom a) where
+  unitBwd = pure unitBwd
+
 instance (TrivialBwd a, KnownNat n) => TrivialBwd (Vec n a) where
   unitBwd = repeat unitBwd
 
