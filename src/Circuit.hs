@@ -10,15 +10,18 @@
 This file contains the 'Circuit' type, that the notation describes.
 -}
 
-{-# LANGUAGE DeriveFunctor       #-}
-{-# LANGUAGE NoImplicitPrelude   #-}
-{-# LANGUAGE PatternSynonyms     #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeFamilies        #-}
-
-{-# LANGUAGE DataKinds           #-}
-{-# LANGUAGE GADTs               #-}
-{-# LANGUAGE TypeOperators       #-}
+{-# LANGUAGE DataKinds              #-}
+{-# LANGUAGE DeriveFunctor          #-}
+{-# LANGUAGE GADTs                  #-}
+{-# LANGUAGE MultiParamTypeClasses  #-}
+{-# LANGUAGE NoImplicitPrelude      #-}
+{-# LANGUAGE PatternSynonyms        #-}
+{-# LANGUAGE ScopedTypeVariables    #-}
+{-# LANGUAGE TypeApplications       #-}
+{-# LANGUAGE TypeFamilies           #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE TypeOperators          #-}
+{-# LANGUAGE ViewPatterns           #-}
 
 module Circuit where
 
@@ -70,6 +73,29 @@ type instance Bwd (Signal dom a) = ()
 newtype Circuit a b = Circuit { runCircuit :: CircuitT a b }
 type CircuitT a b = (Fwd a :-> Bwd b) -> (Bwd a :-> Fwd b)
 
+
+type TagCircuitT a b = (TagFwd a :-> TagBwd b) -> (TagBwd a :-> TagFwd b)
+
+newtype Tag t b = Tag {unTag :: b}
+
+type TagFwd a = Tag a (Fwd a)
+type TagBwd a = Tag a (Bwd a)
+
+mkTagCircuit :: TagCircuitT a b -> Circuit a b
+mkTagCircuit f = Circuit $ \ (aFwd :-> bBwd) -> let
+    (Tag aBwd :-> Tag bFwd) = f (Tag aFwd :-> Tag bBwd)
+  in (aBwd :-> bFwd)
+
+runTagCircuit :: Circuit a b -> TagCircuitT a b
+runTagCircuit (Circuit c) (aFwd :-> bBwd) = let
+    (aBwd :-> bFwd) = c (unTag aFwd :-> unTag bBwd)
+  in (Tag aBwd :-> Tag bFwd)
+
+pattern TagCircuit :: TagCircuitT a b -> Circuit a b
+pattern TagCircuit f <- (runTagCircuit -> f) where
+  TagCircuit f = mkTagCircuit f
+
+
 class TrivialBwd a where
   unitBwd :: a
 
@@ -96,3 +122,36 @@ instance (TrivialBwd a, TrivialBwd b, TrivialBwd c, TrivialBwd d, TrivialBwd e) 
 
 instance (TrivialBwd a, TrivialBwd b, TrivialBwd c, TrivialBwd d, TrivialBwd e, TrivialBwd f) => TrivialBwd (a,b,c,d,e,f) where
   unitBwd = (unitBwd, unitBwd, unitBwd, unitBwd, unitBwd, unitBwd)
+
+instance TrivialBwd a => TrivialBwd (Tag t a) where
+  unitBwd = Tag unitBwd
+
+
+class TagBundle t a where
+  type TagUnbundled t a = res | res -> t a
+  taggedBundle :: TagUnbundled t a -> Tag t a
+  taggedUnbundle :: Tag t a -> TagUnbundled t a
+
+instance TagBundle (ta, tb) (a, b) where
+  type TagUnbundled (ta, tb) (a, b) = (Tag ta a, Tag tb b)
+  taggedBundle (Tag a, Tag b) = Tag (a, b)
+  taggedUnbundle (Tag (a, b)) =  (Tag a, Tag b)
+
+instance TagBundle (ta, tb, tc) (a, b, c) where
+  type TagUnbundled (ta, tb, tc) (a, b, c) = (Tag ta a, Tag tb b, Tag tc c)
+  taggedBundle (Tag a, Tag b, Tag c) = Tag (a, b, c)
+  taggedUnbundle (Tag (a, b, c)) =  (Tag a, Tag b, Tag c)
+
+instance TagBundle (Vec n t) (Vec n a) where
+  type TagUnbundled (Vec n t) (Vec n a) = Vec n (Tag t a)
+  taggedBundle = Tag . fmap unTag
+  taggedUnbundle = fmap Tag . unTag
+
+pattern TagBundle :: TagBundle t a => TagUnbundled t a -> Tag t a
+pattern TagBundle a <- (taggedUnbundle -> a) where
+  TagBundle a = taggedBundle a
+
+instance TagBundle () () where
+  type TagUnbundled () () = ()
+  taggedBundle = Tag
+  taggedUnbundle = unTag
