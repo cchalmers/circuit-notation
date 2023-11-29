@@ -11,19 +11,18 @@ This file contains the 'Circuit' type, that the notation describes.
 -}
 
 {-# LANGUAGE DeriveFunctor       #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
-{-# LANGUAGE PatternSynonyms     #-}
-{-# LANGUAGE ViewPatterns        #-}
 
-{-# LANGUAGE DataKinds        #-}
-{-# LANGUAGE TypeOperators        #-}
-{-# LANGUAGE GADTs        #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE GADTs               #-}
+{-# LANGUAGE TypeOperators       #-}
 
 module Circuit where
 
-import Clash.Prelude (Domain, Signal, Vec(..))
-import Data.Default
+import           Clash.Prelude
 
 type family Fwd a
 type family Bwd a
@@ -70,3 +69,30 @@ type instance Bwd (Signal dom a) = ()
 -- | Circuit type.
 newtype Circuit a b = Circuit { runCircuit :: CircuitT a b }
 type CircuitT a b = (Fwd a :-> Bwd b) -> (Bwd a :-> Fwd b)
+
+class TrivialBwd a where
+  unitBwd :: a
+
+instance TrivialBwd () where
+  unitBwd = ()
+
+instance (TrivialBwd a) => TrivialBwd (Signal dom a) where
+  unitBwd = pure unitBwd
+
+instance (TrivialBwd a, KnownNat n) => TrivialBwd (Vec n a) where
+  unitBwd = repeat unitBwd
+
+instance (TrivialBwd a, TrivialBwd b) => TrivialBwd (a,b) where
+  unitBwd = (unitBwd, unitBwd)
+
+instance (TrivialBwd a, TrivialBwd b, TrivialBwd c) => TrivialBwd (a,b,c) where
+  unitBwd = (unitBwd, unitBwd, unitBwd)
+
+instance (TrivialBwd a, TrivialBwd b, TrivialBwd c, TrivialBwd d) => TrivialBwd (a,b,c,d) where
+  unitBwd = (unitBwd, unitBwd, unitBwd, unitBwd)
+
+instance (TrivialBwd a, TrivialBwd b, TrivialBwd c, TrivialBwd d, TrivialBwd e) => TrivialBwd (a,b,c,d,e) where
+  unitBwd = (unitBwd, unitBwd, unitBwd, unitBwd, unitBwd)
+
+instance (TrivialBwd a, TrivialBwd b, TrivialBwd c, TrivialBwd d, TrivialBwd e, TrivialBwd f) => TrivialBwd (a,b,c,d,e,f) where
+  unitBwd = (unitBwd, unitBwd, unitBwd, unitBwd, unitBwd, unitBwd)

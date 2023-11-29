@@ -10,15 +10,15 @@
 This file contains examples of using the Circuit Notation.
 -}
 
-{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE BlockArguments      #-}
+{-# LANGUAGE CPP                 #-}
+{-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE DeriveFunctor       #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
-{-# LANGUAGE DataKinds        #-}
 
 #if __GLASGOW_HASKELL__ < 810
-{-# LANGUAGE Arrows #-}
+{-# LANGUAGE Arrows              #-}
 #endif
 
 {-# OPTIONS -fplugin=CircuitNotation #-}
@@ -34,9 +34,9 @@ This file contains examples of using the Circuit Notation.
 
 module Example where
 
-import Circuit
+import           Circuit
 
-import Clash.Prelude (Signal, Vec(..))
+import           Clash.Prelude (Signal, Vec (..))
 
 idCircuit :: Circuit a a
 idCircuit = idC
@@ -139,6 +139,14 @@ vec0 = circuit \[] -> ()
 vec00 :: Circuit (Vec 0 a) (Vec 0 a)
 vec00 = circuit \[] -> []
 
+-- test that signals can be duplicated
+dupSignalC0 :: Circuit (Signal dom Bool) (Signal dom Bool, Signal dom Bool)
+dupSignalC0 = circuit $ \x -> (x, x)
+
+dupSignalC1 :: Circuit (Signal dom Bool) (Signal dom Bool, Signal dom Bool, Signal dom Bool)
+dupSignalC1 = circuit $ \x -> do
+    y <- idC -< x
+    idC -< (y, y, x)
 
 -- -- myDesire :: Circuit Int Char
 -- -- myDesire = Circuit (\(aM2S,bS2M) -> let
