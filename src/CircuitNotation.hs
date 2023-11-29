@@ -657,7 +657,7 @@ checkCircuit = do
         when (length ss > 1) $
           errM (head ss) $ "Slave port " <> show name <> " defined " <> show (length ss) <> " times"
 
-        -- if master is defined multiple times, we try to broadcast it
+        -- if master is defined multiple times, we broadcast it
         if length ms > 1
           then pure [name]
           else pure []
