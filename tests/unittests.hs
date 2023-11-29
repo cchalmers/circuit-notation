@@ -5,6 +5,7 @@
 module Main where
 
 import           Circuit
+import           Example
 
 main :: IO ()
 main = pure ()
