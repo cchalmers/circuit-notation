@@ -902,15 +902,33 @@ tagE a = varE noSrcSpan (tagName ?nms) `appE` a
 tagTypeCon :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType GhcPs
 tagTypeCon = noLoc (HsTyVar noExt NotPromoted (noLoc (tagTName ?nms)))
 
+sigPat :: (p ~ GhcPs) => SrcSpan -> LHsType GhcPs -> LPat p -> LPat p
+sigPat loc ty a = L loc $
+#if __GLASGOW_HASKELL__ < 810
+    SigPat (HsWC noExt (HsIB noExt ty)) a
+#elif __GLASGOW_HASKELL__ < 900
+    SigPat noExt a (HsWC noExt (HsIB noExt ty))
+#else
+    SigPat noExt a (HsPS noExt ty)
+#endif
+
+sigE :: (p ~ GhcPs, ?nms :: ExternalNames) => SrcSpan -> LHsType GhcPs -> LHsExpr p -> LHsExpr p
+sigE loc ty a = L loc $
+#if __GLASGOW_HASKELL__ < 810
+    ExprWithTySig (HsWC noExt (HsIB noExt ty)) a
+#else
+    ExprWithTySig noExt a (HsWC noExt (HsIB noExt ty))
+#endif
+
 tagTypeP :: (p ~ GhcPs, ?nms :: ExternalNames) => Direction -> LHsType GhcPs -> LPat p -> LPat p
-tagTypeP dir ty a
-  = noLoc (SigPat (HsWC noExt (HsIB noExt (tagTypeCon `appTy` ty `appTy` busType))) a)
+tagTypeP dir ty
+  = sigPat noSrcSpan (tagTypeCon `appTy` ty `appTy` busType)
   where
     busType = conT noSrcSpan (fwdAndBwdTypes ?nms dir) `appTy` ty
 
 tagTypeE :: (p ~ GhcPs, ?nms :: ExternalNames) => Direction -> LHsType GhcPs -> LHsExpr p -> LHsExpr p
 tagTypeE dir ty a
-  = noLoc (ExprWithTySig (HsWC noExt (HsIB noExt (tagTypeCon `appTy` ty `appTy` busType))) a)
+  = sigE noSrcSpan (tagTypeCon `appTy` ty `appTy` busType) a
   where
     busType = conT noSrcSpan (fwdAndBwdTypes ?nms dir) `appTy` ty
 
