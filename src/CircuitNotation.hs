@@ -1122,8 +1122,8 @@ defExternalNames :: ExternalNames
 defExternalNames = ExternalNames
   { circuitCon = GHC.Unqual (OccName.mkDataOcc "TagCircuit")
   , runCircuitName = GHC.Unqual (OccName.mkVarOcc "runTagCircuit")
-  , tagBundlePat = GHC.Unqual (OccName.mkDataOcc "TagBundle")
-  , tagName = GHC.Unqual (OccName.mkDataOcc "Tag")
+  , tagBundlePat = GHC.Unqual (OccName.mkDataOcc "BusTagBundle")
+  , tagName = GHC.Unqual (OccName.mkDataOcc "BusTag")
   , fwdBwdCon = GHC.Unqual (OccName.mkDataOcc ":->")
   , trivialBwd = GHC.Unqual (OccName.mkVarOcc "unitBwd")
   }
