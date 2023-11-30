@@ -88,12 +88,17 @@ sigExpr sig = circuit do
 -- sigPat :: (( Signal Int -> Signal Int ))
 sigPat :: Circuit (Signal domain Int) (Signal domain Int)
 sigPat = circuit $ \(Signal a) -> do
-  i <- (idC :: Circuit (Signal domain Int) (Signal domain Int)) -< Signal a
+  i <- idC -< Signal a
   idC -< i
 
 sigPat2 :: Circuit (Signal dom Int) (Signal dom Int)
 sigPat2 = circuit $ \(Signal a) -> do
   i <- (idC :: Circuit (Signal dom Int) (Signal dom Int)) -< Signal a
+  idC -< i
+
+fwdCircuit :: Circuit (Vec 3 (Signal dom Int)) (Vec 3 (Signal dom Int))
+fwdCircuit = circuit $ \(Fwd x) -> do
+  i <- idC -< Fwd (fmap (+1) x)
   idC -< i
 
 fstC :: Circuit (Signal domain a, Signal domain b) (Signal domain a)

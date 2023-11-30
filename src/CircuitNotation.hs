@@ -242,8 +242,8 @@ data PortDescription a
     | Ref a
     | RefMulticast a
     | Lazy SrcSpanAnnA (PortDescription a)
-    | SignalExpr (LHsExpr GhcPs)
-    | SignalPat (LPat GhcPs)
+    | FwdExpr (LHsExpr GhcPs)
+    | FwdPat (LPat GhcPs)
     | PortType (LHsType GhcPs) (PortDescription a)
     | PortErr SrcSpanAnnA MsgDoc
     deriving (Foldable, Functor, Traversable)
@@ -635,7 +635,7 @@ bindSlave (L loc expr) = case expr of
 #else
   ConPatIn (L _ (GHC.Unqual occ)) (PrefixCon [lpat])
 #endif
-    | OccName.occNameString occ == "Signal" -> SignalPat lpat
+    | OccName.occNameString occ `elem` fwdNames -> FwdPat lpat
   -- empty list is done as the constructor
 #if __GLASGOW_HASKELL__ >= 900
   ConPat _ (L _ rdr) _
@@ -670,7 +670,7 @@ bindMaster (L loc expr) = case expr of
     | rdrName == thName '[] -> Vec loc [] -- XXX: vloc?
     | otherwise -> Ref (PortName loc (fromRdrName rdrName)) -- XXX: vloc?
   HsApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig
-    | OccName.occNameString occ == "Signal" -> SignalExpr sig
+    | OccName.occNameString occ `elem` fwdNames -> FwdExpr sig
   ExplicitTuple _ tups _ -> let
 #if __GLASGOW_HASKELL__ >= 902
     vals = fmap (\(Present _ e) -> e) tups
@@ -686,13 +686,13 @@ bindMaster (L loc expr) = case expr of
     Vec loc $ fmap bindMaster exprs
 #if __GLASGOW_HASKELL__ < 810
   HsArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig _ _
-    | OccName.occNameString occ == "Signal" -> SignalExpr sig
+    | OccName.occNameString occ `elem` fwdNames -> FwdExpr sig
   ExprWithTySig ty expr' -> PortType (hsSigWcType ty) (bindMaster expr')
   ELazyPat _ expr' -> Lazy loc (bindMaster expr')
 #else
   -- XXX: Untested?
   HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig _ _))))
-    | OccName.occNameString occ == "Signal" -> SignalExpr sig
+    | OccName.occNameString occ `elem` fwdNames -> FwdExpr sig
   ExprWithTySig _ expr' ty -> PortType (hsSigWcType ty) (bindMaster expr')
 #endif
 
@@ -804,11 +804,11 @@ bindWithSuffix dflags dir = \case
   Lazy loc p -> tildeP loc $ bindWithSuffix dflags dir p
 #if __GLASGOW_HASKELL__ >= 902
   -- XXX: propagate location
-  SignalExpr (L _ _) -> nlWildPat
+  FwdExpr (L _ _) -> nlWildPat
 #else
-  SignalExpr (L l _) -> L l (WildPat noExt)
+  FwdExpr (L l _) -> L l (WildPat noExt)
 #endif
-  SignalPat lpat -> tagP lpat
+  FwdPat lpat -> tagP lpat
   PortType _ p -> bindWithSuffix dflags dir p
 
 revDirec :: Direc -> Direc
@@ -841,8 +841,8 @@ expWithSuffix dir = \case
   -- laziness only affects the pattern side
   Lazy _ p   -> expWithSuffix dir p
   PortErr _ _ -> error "expWithSuffix PortErr!"
-  SignalExpr lexpr -> tagE lexpr
-  SignalPat (L l _) -> tagE $ tupE l []
+  FwdExpr lexpr -> tagE lexpr
+  FwdPat (L l _) -> tagE $ varE l (trivialBwd ?nms)
   PortType _ p -> expWithSuffix dir p
 
 createInputs
@@ -1104,6 +1104,9 @@ showC :: Data.Data a => a -> String
 showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
 
 -- Names ---------------------------------------------------------------
+
+fwdNames :: [String]
+fwdNames = ["Fwd", "Signal"]
 
 -- | Collection of names external to circuit-notation.
 data ExternalNames = ExternalNames
