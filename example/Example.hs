@@ -36,7 +36,7 @@ module Example where
 
 import           Circuit
 
-import           Clash.Prelude (Signal, Vec (..))
+import           Clash.Prelude
 
 idCircuit :: Circuit a a
 idCircuit = idC
@@ -99,6 +99,12 @@ sigPat2 = circuit $ \(Signal a) -> do
 fwdCircuit :: Circuit (Vec 3 (Signal dom Int)) (Vec 3 (Signal dom Int))
 fwdCircuit = circuit $ \(Fwd x) -> do
   i <- idC -< Fwd (fmap (+1) x)
+  idC -< i
+
+fwdWithLetCircuit :: KnownNat n => Circuit (Vec n (Signal dom Int)) (Vec n (Signal dom Int))
+fwdWithLetCircuit = circuit $ \(Fwd x) -> do
+  let y = fmap (+1) x
+  i <- idC -< Fwd y
   idC -< i
 
 fstC :: Circuit (Signal domain a, Signal domain b) (Signal domain a)
