@@ -133,6 +133,21 @@ unfstC3 = circuit $ \a -> do
   ab' <- idC -< ab
   idC -< ab'
 
+-- a version of `idC` on `Signal domain Int` which has bad type inference.
+idCHard
+  :: (Fwd a ~ Signal domain Int, Bwd a ~ (), Fwd b ~ Signal domain Int, Bwd b ~ ())
+  => Circuit a b
+idCHard = Circuit $ \ (aFwd :-> ()) -> () :-> aFwd
+
+typedBus1 :: forall domain . Circuit (Signal domain Int) (Signal domain Int)
+typedBus1 = circuit $ \a -> do
+  (b :: Signal domain Int) <- idCHard -< a
+  idCHard -< b
+
+typedBus2 :: forall domain . Circuit (Signal domain Int) (Signal domain Int)
+typedBus2 = circuit $ \a -> do
+  b <- idCHard -< a
+  idCHard -< (b :: Signal domain Int)
 
 swapTest :: forall a b. Circuit (a,b) (b,a)
 -- swapTest = circuit $ \(a,b) -> (idCircuit :: Circuit (b, a) (b, a)) -< (b, a)

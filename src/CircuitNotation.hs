@@ -696,6 +696,8 @@ bindMaster (L loc expr) = case expr of
   ExprWithTySig _ expr' ty -> PortType (hsSigWcType ty) (bindMaster expr')
 #endif
 
+  HsPar _ expr' -> bindMaster expr'
+
   -- OpApp _xapp (L _ circuitVar) (L _ infixVar) appR -> k
 
   _ -> PortErr loc
@@ -789,9 +791,9 @@ checkCircuit = do
 
 -- Creating ------------------------------------------------------------
 
-data Direc = Fwd | Bwd deriving Show
+data Direction = Fwd | Bwd deriving Show
 
-bindWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => GHC.DynFlags -> Direc -> PortDescription PortName -> LPat p
+bindWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => GHC.DynFlags -> Direction -> PortDescription PortName -> LPat p
 bindWithSuffix dflags dir = \case
   Tuple ps -> tildeP noSrcSpanA $ taggedBundleP $ tupP $ fmap (bindWithSuffix dflags dir) ps
   Vec s ps -> taggedBundleP $ vecP s $ fmap (bindWithSuffix dflags dir) ps
@@ -809,9 +811,9 @@ bindWithSuffix dflags dir = \case
   FwdExpr (L l _) -> L l (WildPat noExt)
 #endif
   FwdPat lpat -> tagP lpat
-  PortType _ p -> bindWithSuffix dflags dir p
+  PortType ty p -> tagTypeP dir ty $ bindWithSuffix dflags dir p
 
-revDirec :: Direc -> Direc
+revDirec :: Direction -> Direction
 revDirec = \case
   Fwd -> Bwd
   Bwd -> Fwd
@@ -819,7 +821,7 @@ revDirec = \case
 bindOutputs
   :: (p ~ GhcPs, ?nms :: ExternalNames)
   => GHC.DynFlags
-  -> Direc
+  -> Direction
   -> PortDescription PortName
   -- ^ slave ports
   -> PortDescription PortName
@@ -830,7 +832,7 @@ bindOutputs dflags direc slaves masters = noLoc $ conPatIn (noLoc (fwdBwdCon ?nm
   m2s = bindWithSuffix dflags direc masters
   s2m = bindWithSuffix dflags (revDirec direc) slaves
 
-expWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => Direc -> PortDescription PortName -> LHsExpr p
+expWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => Direction -> PortDescription PortName -> LHsExpr p
 expWithSuffix dir = \case
   Tuple ps -> taggedBundleE $ tupE noSrcSpanA $ fmap (expWithSuffix dir) ps
   Vec s ps -> taggedBundleE $ vecE s $ fmap (expWithSuffix dir) ps
@@ -843,11 +845,11 @@ expWithSuffix dir = \case
   PortErr _ _ -> error "expWithSuffix PortErr!"
   FwdExpr lexpr -> tagE lexpr
   FwdPat (L l _) -> tagE $ varE l (trivialBwd ?nms)
-  PortType _ p -> expWithSuffix dir p
+  PortType ty p -> tagTypeE dir ty (expWithSuffix dir p)
 
 createInputs
   :: (p ~ GhcPs, ?nms :: ExternalNames)
-  => Direc
+  => Direction
   -> PortDescription PortName
   -- ^ slave ports
   -> PortDescription PortName
@@ -896,6 +898,21 @@ tagP a = noLoc (conPatIn (noLoc (tagName ?nms)) (PrefixCon [a]))
 
 tagE :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsExpr p -> LHsExpr p
 tagE a = varE noSrcSpan (tagName ?nms) `appE` a
+
+tagTypeCon :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType GhcPs
+tagTypeCon = noLoc (HsTyVar noExt NotPromoted (noLoc (tagTName ?nms)))
+
+tagTypeP :: (p ~ GhcPs, ?nms :: ExternalNames) => Direction -> LHsType GhcPs -> LPat p -> LPat p
+tagTypeP dir ty a
+  = noLoc (SigPat (HsWC noExt (HsIB noExt (tagTypeCon `appTy` ty `appTy` busType))) a)
+  where
+    busType = conT noSrcSpan (fwdAndBwdTypes ?nms dir) `appTy` ty
+
+tagTypeE :: (p ~ GhcPs, ?nms :: ExternalNames) => Direction -> LHsType GhcPs -> LHsExpr p -> LHsExpr p
+tagTypeE dir ty a
+  = noLoc (ExprWithTySig (HsWC noExt (HsIB noExt (tagTypeCon `appTy` ty `appTy` busType))) a)
+  where
+    busType = conT noSrcSpan (fwdAndBwdTypes ?nms dir) `appTy` ty
 
 constVar :: SrcSpanAnnA -> LHsExpr GhcPs
 constVar loc = varE loc (thName 'const)
@@ -1114,7 +1131,9 @@ data ExternalNames = ExternalNames
   , runCircuitName :: GHC.RdrName
   , tagBundlePat :: GHC.RdrName
   , tagName :: GHC.RdrName
+  , tagTName :: GHC.RdrName
   , fwdBwdCon :: GHC.RdrName
+  , fwdAndBwdTypes :: Direction -> GHC.RdrName
   , trivialBwd :: GHC.RdrName
   }
 
@@ -1124,6 +1143,10 @@ defExternalNames = ExternalNames
   , runCircuitName = GHC.Unqual (OccName.mkVarOcc "runTagCircuit")
   , tagBundlePat = GHC.Unqual (OccName.mkDataOcc "BusTagBundle")
   , tagName = GHC.Unqual (OccName.mkDataOcc "BusTag")
+  , tagTName = GHC.Unqual (OccName.mkTcOcc "BusTag")
   , fwdBwdCon = GHC.Unqual (OccName.mkDataOcc ":->")
+  , fwdAndBwdTypes = \case
+      Fwd -> GHC.Unqual (OccName.mkTcOcc "Fwd")
+      Bwd -> GHC.Unqual (OccName.mkTcOcc "Bwd")
   , trivialBwd = GHC.Unqual (OccName.mkVarOcc "unitBwd")
   }
