@@ -887,22 +887,31 @@ circuitConstructor loc = varE loc (circuitCon ?nms)
 runCircuitFun :: (?nms :: ExternalNames) => SrcSpanAnnA -> LHsExpr GhcPs
 runCircuitFun loc = varE loc (runCircuitName ?nms)
 
+
+#if __GLASGOW_HASKELL__ < 902
+prefixCon :: [arg] -> HsConDetails arg rec
+prefixCon a = PrefixCon a
+#else
+prefixCon :: [arg] -> HsConDetails tyarg arg rec
+prefixCon a = PrefixCon [] a
+#endif
+
 taggedBundleP :: (p ~ GhcPs, ?nms :: ExternalNames) => LPat p -> LPat p
-taggedBundleP a = noLoc (conPatIn (noLoc (tagBundlePat ?nms)) (PrefixCon [a]))
+taggedBundleP a = noLoc (conPatIn (noLoc (tagBundlePat ?nms)) (prefixCon [a]))
 
 taggedBundleE :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsExpr p -> LHsExpr p
-taggedBundleE a = varE noSrcSpan (tagBundlePat ?nms) `appE` a
+taggedBundleE a = varE noSrcSpanA (tagBundlePat ?nms) `appE` a
 
 tagP :: (p ~ GhcPs, ?nms :: ExternalNames) => LPat p -> LPat p
-tagP a = noLoc (conPatIn (noLoc (tagName ?nms)) (PrefixCon [a]))
+tagP a = noLoc (conPatIn (noLoc (tagName ?nms)) (prefixCon [a]))
 
 tagE :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsExpr p -> LHsExpr p
-tagE a = varE noSrcSpan (tagName ?nms) `appE` a
+tagE a = varE noSrcSpanA (tagName ?nms) `appE` a
 
 tagTypeCon :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType GhcPs
 tagTypeCon = noLoc (HsTyVar noExt NotPromoted (noLoc (tagTName ?nms)))
 
-sigPat :: (p ~ GhcPs) => SrcSpan -> LHsType GhcPs -> LPat p -> LPat p
+sigPat :: (p ~ GhcPs) => SrcSpanAnnA -> LHsType GhcPs -> LPat p -> LPat p
 sigPat loc ty a = L loc $
 #if __GLASGOW_HASKELL__ < 810
     SigPat (HsWC noExt (HsIB noExt ty)) a
@@ -912,25 +921,27 @@ sigPat loc ty a = L loc $
     SigPat noExt a (HsPS noExt ty)
 #endif
 
-sigE :: (p ~ GhcPs, ?nms :: ExternalNames) => SrcSpan -> LHsType GhcPs -> LHsExpr p -> LHsExpr p
+sigE :: (?nms :: ExternalNames) => SrcSpanAnnA -> LHsType GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
 sigE loc ty a = L loc $
 #if __GLASGOW_HASKELL__ < 810
     ExprWithTySig (HsWC noExt (HsIB noExt ty)) a
-#else
+#elif __GLASGOW_HASKELL__ < 902
     ExprWithTySig noExt a (HsWC noExt (HsIB noExt ty))
+#else
+    ExprWithTySig noExt a (HsWC noExtField (L loc $ HsSig noExtField (HsOuterImplicit noExtField) ty))
 #endif
 
 tagTypeP :: (p ~ GhcPs, ?nms :: ExternalNames) => Direction -> LHsType GhcPs -> LPat p -> LPat p
 tagTypeP dir ty
-  = sigPat noSrcSpan (tagTypeCon `appTy` ty `appTy` busType)
+  = sigPat noSrcSpanA (tagTypeCon `appTy` ty `appTy` busType)
   where
-    busType = conT noSrcSpan (fwdAndBwdTypes ?nms dir) `appTy` ty
+    busType = conT noSrcSpanA (fwdAndBwdTypes ?nms dir) `appTy` ty
 
 tagTypeE :: (p ~ GhcPs, ?nms :: ExternalNames) => Direction -> LHsType GhcPs -> LHsExpr p -> LHsExpr p
 tagTypeE dir ty a
-  = sigE noSrcSpan (tagTypeCon `appTy` ty `appTy` busType) a
+  = sigE noSrcSpanA (tagTypeCon `appTy` ty `appTy` busType) a
   where
-    busType = conT noSrcSpan (fwdAndBwdTypes ?nms dir) `appTy` ty
+    busType = conT noSrcSpanA (fwdAndBwdTypes ?nms dir) `appTy` ty
 
 constVar :: SrcSpanAnnA -> LHsExpr GhcPs
 constVar loc = varE loc (thName 'const)
@@ -1010,7 +1021,7 @@ circuitQQExpM = do
     binds
   mapM_ gatherTypes [masters, slaves]
 
-  pure $ circuitConstructor noSrcSpan `appE` lamE [pats] body
+  pure $ circuitConstructor noSrcSpanA `appE` lamE [pats] body
 
 grr :: MonadIO m => OccName.NameSpace -> m ()
 grr nm

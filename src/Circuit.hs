@@ -74,12 +74,9 @@ newtype Circuit a b = Circuit { runCircuit :: CircuitT a b }
 type CircuitT a b = (Fwd a :-> Bwd b) -> (Bwd a :-> Fwd b)
 
 
-type TagCircuitT a b = (BusTagFwd a :-> BusTagBwd b) -> (BusTagBwd a :-> BusTagFwd b)
+type TagCircuitT a b = (BusTag a (Fwd a) :-> BusTag b (Bwd b)) -> (BusTag a (Bwd a) :-> BusTag b (Fwd b))
 
 newtype BusTag t b = BusTag {unBusTag :: b}
-
-type BusTagFwd a = BusTag a (Fwd a)
-type BusTagBwd a = BusTag a (Bwd a)
 
 mkTagCircuit :: TagCircuitT a b -> Circuit a b
 mkTagCircuit f = Circuit $ \ (aFwd :-> bBwd) -> let
@@ -201,3 +198,4 @@ instance BusTagBundle (Vec n t) (Vec n a) where
 pattern BusTagBundle :: BusTagBundle t a => BusTagUnbundled t a -> BusTag t a
 pattern BusTagBundle a <- (taggedUnbundle -> a) where
   BusTagBundle a = taggedBundle a
+{-# COMPLETE BusTagBundle #-}
