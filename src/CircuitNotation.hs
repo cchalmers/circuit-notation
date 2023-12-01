@@ -811,7 +811,7 @@ bindWithSuffix dflags dir = \case
   FwdExpr (L l _) -> L l (WildPat noExt)
 #endif
   FwdPat lpat -> tagP lpat
-  PortType _ty p -> bindWithSuffix dflags dir p
+  PortType ty p -> tagTypeP dir ty $ bindWithSuffix dflags dir p
 
 revDirec :: Direction -> Direction
 revDirec = \case
