@@ -8,8 +8,8 @@ stdenv.mkDerivation {
 
   buildInputs = [
     ghc
-    # cabal-install
-    # haskellPackages.ghcid
+    cabal-install
+    haskellPackages.ghcid
     haskellPackages.stylish-haskell
   ];
 
