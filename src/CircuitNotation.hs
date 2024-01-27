@@ -483,10 +483,10 @@ portTypeSigM = \case
   Lazy _ p -> portTypeSigM p
   SignalExpr (L l _) -> do
     n <- uniqueCounter <<+= 1
-    pure $ (conT l (thName ''Signal)) `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
+    pure $ signalTy (varT l (genLocName l "dom")) (varT l (genLocName l ("sig_" <> show n)))
   SignalPat (L l _) -> do
     n <- uniqueCounter <<+= 1
-    pure $ (conT l (thName ''Signal)) `appTy` (varT l (genLocName l "dom")) `appTy` (varT l (genLocName l ("sig_" <> show n)))
+    pure $ signalTy (varT l (genLocName l "dom")) (varT l (genLocName l ("sig_" <> show n)))
   PortType _ p -> portTypeSigM p
 
 -- | Generate a "unique" name by appending the location as a string.
@@ -951,6 +951,9 @@ varT loc nm = L loc (HsTyVar noExt NotPromoted (noLoc (tyVar nm)))
 conT :: SrcSpanAnnA -> GHC.RdrName -> LHsType GhcPs
 conT loc nm = L loc (HsTyVar noExt NotPromoted (noLoc nm))
 
+signalTy :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType p -> LHsType p -> LHsType p
+signalTy dom a = conT noSrcSpanA (signalTyCon ?nms) `appTy` dom `appTy` a
+
 circuitTy :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType p -> LHsType p -> LHsType p
 circuitTy a b = conT noSrcSpanA (circuitTyCon ?nms) `appTy` a `appTy` b
 
@@ -1225,6 +1228,7 @@ data ExternalNames = ExternalNames
   , circuitTyCon :: GHC.RdrName
   , circuitTTyCon :: GHC.RdrName
   , runCircuitName :: GHC.RdrName
+  , signalTyCon :: GHC.RdrName
   , fwdBwdCon :: GHC.RdrName
   , trivialBwd :: GHC.RdrName
   }
@@ -1235,6 +1239,7 @@ defExternalNames = ExternalNames
   , circuitTyCon = GHC.Unqual (OccName.mkTcOcc "Circuit")
   , circuitTTyCon = GHC.Unqual (OccName.mkTcOcc "CircuitT")
   , runCircuitName = GHC.Unqual (OccName.mkVarOcc "runCircuit")
+  , signalTyCon = GHC.Unqual (OccName.mkTcOcc "Signal")
   , fwdBwdCon = GHC.Unqual (OccName.mkDataOcc ":->")
   , trivialBwd = GHC.Unqual (OccName.mkVarOcc "unitBwd")
   }
