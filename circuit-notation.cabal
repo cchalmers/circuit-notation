@@ -28,7 +28,7 @@ library
     , clash-prelude >= 1.0
     , containers
     , data-default
-    , ghc (>=8.6 && <8.8) || (>=8.10 && < 9.6)
+    , ghc (>=8.6 && <8.8) || (>=8.10 && < 9.8)
     , lens
     , mtl
     , parsec
