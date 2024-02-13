@@ -74,7 +74,9 @@ import qualified GHC.Parser.Annotation     as GHC
 #if __GLASGOW_HASKELL__ >= 900
 import           GHC.Data.Bag
 import           GHC.Data.FastString       (mkFastString, unpackFS)
+#if __GLASGOW_HASKELL__ < 906
 import           GHC.Plugins               (PromotionFlag(NotPromoted))
+#endif
 import           GHC.Types.SrcLoc          hiding (noLoc)
 import qualified GHC.Data.FastString       as GHC
 import qualified GHC.Driver.Plugins        as GHC
@@ -141,6 +143,10 @@ import           Control.Lens.Operators
 
 -- mtl
 import           Control.Monad.State
+
+#if __GLASGOW_HASKELL__ >= 906
+import           Control.Monad
+#endif
 
 -- pretty-show
 -- import qualified Text.Show.Pretty       as SP
@@ -251,7 +257,13 @@ pattern ParPatP :: LPat p -> Pat p
 pattern ParPatP p <- ParPat _ _ p _
 #endif
 
-mkErrMsg :: GHC.DynFlags -> SrcSpan -> Outputable.PrintUnqualified -> Outputable.SDoc -> ErrMsg
+#if __GLASGOW_HASKELL__ < 906
+type PrintUnqualified = Outputable.PrintUnqualified
+#else
+type PrintUnqualified = Outputable.NamePprCtx
+#endif
+
+mkErrMsg :: GHC.DynFlags -> SrcSpan -> PrintUnqualified -> Outputable.SDoc -> ErrMsg
 #if __GLASGOW_HASKELL__ < 902
 mkErrMsg = Err.mkErrMsg
 #elif __GLASGOW_HASKELL__ >= 902 && __GLASGOW_HASKELL__ < 904
@@ -266,7 +278,7 @@ mkErrMsg _ locn unqual =
   . Err.mkPlainError Err.noHints
 #endif
 
-mkLongErrMsg :: GHC.DynFlags -> SrcSpan -> Outputable.PrintUnqualified -> Outputable.SDoc -> Outputable.SDoc -> ErrMsg
+mkLongErrMsg :: GHC.DynFlags -> SrcSpan -> PrintUnqualified -> Outputable.SDoc -> Outputable.SDoc -> ErrMsg
 #if __GLASGOW_HASKELL__ < 902
 mkLongErrMsg = Err.mkLongErrMsg
 #elif __GLASGOW_HASKELL__ >= 902 && __GLASGOW_HASKELL__ < 904
@@ -381,10 +393,22 @@ runCircuitM (CircuitM m) = do
 #endif
   pure a
 
+#if __GLASGOW_HASKELL__ < 904
+mkLocMessage :: Err.Severity -> SrcSpan -> Outputable.SDoc -> Outputable.SDoc
+#else
+mkLocMessage :: Err.MessageClass -> SrcSpan -> Outputable.SDoc -> Outputable.SDoc
+#endif
+
+#if __GLASGOW_HASKELL__ < 906
+mkLocMessage = Err.mkLocMessageAnn Nothing
+#else
+mkLocMessage = Err.mkLocMessage
+#endif
+
 errM :: SrcSpan -> String -> CircuitM ()
 errM loc msg = do
   dflags <- GHC.getDynFlags
-  let errMsg = Err.mkLocMessageAnn Nothing sevFatal loc (Outputable.text msg)
+  let errMsg = mkLocMessage sevFatal loc (Outputable.text msg)
   cErrors %= consBag (mkErrMsg dflags loc Outputable.alwaysQualify errMsg)
 
 -- ghc helpers ---------------------------------------------------------
@@ -538,7 +562,11 @@ genLocName _ prefix = prefix
 -- | Extract a simple lambda into inputs and body.
 simpleLambda :: HsExpr GhcPs -> Maybe ([LPat GhcPs], LHsExpr GhcPs)
 simpleLambda expr = do
+#if __GLASGOW_HASKELL__ < 906
   HsLam _ (MG _x alts _origin) <- Just expr
+#else
+  HsLam _ (MG _x alts) <- Just expr
+#endif
   L _ [L _ (Match _matchX _matchContext matchPats matchGr)] <- Just alts
   GRHSs _grX grHss _grLocalBinds <- Just matchGr
   [L _ (GRHS _ _ body)] <- Just grHss
@@ -587,7 +615,11 @@ lamE :: [LPat GhcPs] -> LHsExpr GhcPs -> LHsExpr GhcPs
 lamE pats expr = noLoc $ HsLam noExtField mg
   where
     mg :: MatchGroup GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
+#if __GLASGOW_HASKELL__ < 906
     mg = MG noExtField matches GHC.Generated
+#else
+    mg = MG GHC.Generated matches
+#endif
 
     matches :: GenLocated SrcSpanAnnL [GenLocated SrcSpanAnnA (Match GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs)))]
     matches = noLoc $ [singleMatch]
@@ -739,8 +771,7 @@ bindSlave (L loc expr) = case expr of
   ListPat _ pats -> Vec loc (map bindSlave pats)
   pat ->
     PortErr loc
-            (Err.mkLocMessageAnn
-              Nothing
+            (mkLocMessage
               sevFatal
               (locA loc)
               (Outputable.text $ "Unhandled pattern " <> show (Data.toConstr pat))
@@ -785,8 +816,7 @@ bindMaster (L loc expr) = case expr of
   -- OpApp _xapp (L _ circuitVar) (L _ infixVar) appR -> k
 
   _ -> PortErr loc
-    (Err.mkLocMessageAnn
-      Nothing
+    (mkLocMessage
       sevFatal
       (locA loc)
       (Outputable.text $ "Unhandled expression " <> show (Data.toConstr expr))
@@ -952,7 +982,10 @@ decFromBinding dflags Binding {..} = do
    in patBind bindPat bod
 
 patBind :: LPat GhcPs -> LHsExpr GhcPs -> HsBind GhcPs
-patBind lhs expr = PatBind noExt lhs rhs ([], [])
+patBind lhs expr = PatBind noExt lhs rhs
+#if __GLASGOW_HASKELL__ < 906
+   ([], [])
+#endif
   where
     rhs :: GRHSs GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
     rhs = GRHSs emptyComments [gr] $
@@ -1153,7 +1186,7 @@ completeUnderscores = do
 transform
     :: (?nms :: ExternalNames)
     => Bool
-#if __GLASGOW_HASKELL__ >= 900
+#if __GLASGOW_HASKELL__ >= 900 && __GLASGOW_HASKELL__ < 906
     -> GHC.Located HsModule
     -> GHC.Hsc (GHC.Located HsModule)
 #else
@@ -1223,6 +1256,9 @@ warningMsg sdoc = do
   let
     diagOpts = GHC.initDiagOpts dflags
     mc = Err.mkMCDiagnostic diagOpts GHC.WarningWithoutFlag
+#if __GLASGOW_HASKELL__ >= 906
+           Nothing
+#endif
   liftIO $ GHC.logMsg logger mc noSrcSpan sdoc
 #endif
 
