@@ -16,6 +16,7 @@ This file contains examples of using the Circuit Notation.
 {-# LANGUAGE DeriveFunctor       #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
+{-# LANGUAGE TypeOperators       #-}
 
 #if __GLASGOW_HASKELL__ < 810
 {-# LANGUAGE Arrows              #-}

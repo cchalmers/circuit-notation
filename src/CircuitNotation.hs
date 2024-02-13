@@ -18,10 +18,12 @@ Notation for describing the 'Circuit' type.
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE PackageImports             #-}
+{-# LANGUAGE PatternSynonyms            #-}
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE TypeOperators              #-}
 {-# LANGUAGE ViewPatterns               #-}
 
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
@@ -90,6 +92,15 @@ import           FastString             (mkFastString, unpackFS)
 import qualified GhcPlugins             as GHC
 import qualified OccName
 import qualified Outputable
+#endif
+
+#if __GLASGOW_HASKELL__ >= 904
+import GHC.Driver.Errors.Ppr () -- instance Diagnostic GhcMessage
+
+import qualified GHC.Driver.Config.Diagnostic as GHC
+import qualified GHC.Driver.Errors.Types      as GHC
+import qualified GHC.Utils.Logger             as GHC
+import qualified GHC.Parser.PostProcess       as GHC
 #endif
 
 #if __GLASGOW_HASKELL__ > 808
@@ -168,18 +179,8 @@ imap :: (Int -> a -> b) -> [a] -> [b]
 imap f = zipWith f [0 ..]
 
 -- Utils for backwards compat ------------------------------------------
-#if __GLASGOW_HASKELL__ >= 902
-type MsgDoc = Outputable.SDoc
-type ErrMsg = Err.MsgEnvelope Err.DecoratedSDoc
-
-locA :: SrcSpanAnn' a -> SrcSpan
-locA = GHC.locA
-
-noAnnSortKey :: AnnSortKey
-noAnnSortKey = NoAnnSortKey
-#else
+#if __GLASGOW_HASKELL__ < 902
 type MsgDoc = Err.MsgDoc
-type ErrMsg = Err.ErrMsg
 type SrcSpanAnnA = SrcSpan
 type SrcSpanAnnL = SrcSpan
 
@@ -194,6 +195,30 @@ emptyComments = noExtField
 
 locA :: a -> a
 locA = id
+#else
+type MsgDoc = Outputable.SDoc
+
+locA :: SrcSpanAnn' a -> SrcSpan
+locA = GHC.locA
+
+noAnnSortKey :: AnnSortKey
+noAnnSortKey = NoAnnSortKey
+#endif
+
+#if __GLASGOW_HASKELL__ < 902
+type ErrMsg = Err.ErrMsg
+#elif __GLASGOW_HASKELL__ >= 902 && __GLASGOW_HASKELL__ < 904
+type ErrMsg = Err.MsgEnvelope Err.DecoratedSDoc
+#else
+type ErrMsg = Err.MsgEnvelope GHC.GhcMessage
+#endif
+
+#if __GLASGOW_HASKELL__ < 904
+sevFatal :: Err.Severity
+sevFatal = Err.SevFatal
+#else
+sevFatal :: Err.MessageClass
+sevFatal = Err.MCFatal
 #endif
 
 #if __GLASGOW_HASKELL__ > 900
@@ -212,18 +237,45 @@ noExtField = NoExt
 type NoExtField = NoExt
 #endif
 
+#if __GLASGOW_HASKELL__ < 904
+pattern HsParP :: LHsExpr p -> HsExpr p
+pattern HsParP e <- HsPar _ e
+
+pattern ParPatP :: LPat p -> Pat p
+pattern ParPatP p <- ParPat _ p
+#else
+pattern HsParP :: LHsExpr p -> HsExpr p
+pattern HsParP e <- HsPar _ _ e _
+
+pattern ParPatP :: LPat p -> Pat p
+pattern ParPatP p <- ParPat _ _ p _
+#endif
+
 mkErrMsg :: GHC.DynFlags -> SrcSpan -> Outputable.PrintUnqualified -> Outputable.SDoc -> ErrMsg
-#if __GLASGOW_HASKELL__ >= 902
+#if __GLASGOW_HASKELL__ < 902
+mkErrMsg = Err.mkErrMsg
+#elif __GLASGOW_HASKELL__ >= 902 && __GLASGOW_HASKELL__ < 904
 mkErrMsg _ = Err.mkMsgEnvelope
 #else
-mkErrMsg = Err.mkErrMsg
+-- Check the documentation of
+-- `GHC.Driver.Errors.Types.ghcUnkownMessage` for some background on
+-- why plugins should use this generic message constructor.
+mkErrMsg _ locn unqual =
+    Err.mkErrorMsgEnvelope locn unqual
+  . GHC.ghcUnknownMessage
+  . Err.mkPlainError Err.noHints
 #endif
 
 mkLongErrMsg :: GHC.DynFlags -> SrcSpan -> Outputable.PrintUnqualified -> Outputable.SDoc -> Outputable.SDoc -> ErrMsg
-#if __GLASGOW_HASKELL__ >= 902
+#if __GLASGOW_HASKELL__ < 902
+mkLongErrMsg = Err.mkLongErrMsg
+#elif __GLASGOW_HASKELL__ >= 902 && __GLASGOW_HASKELL__ < 904
 mkLongErrMsg _ = Err.mkLongMsgEnvelope
 #else
-mkLongErrMsg = Err.mkLongErrMsg
+mkLongErrMsg _ locn unqual msg extra =
+    Err.mkErrorMsgEnvelope locn unqual
+  $ GHC.ghcUnknownMessage
+  $ Err.mkDecoratedError Err.noHints [msg, extra]
 #endif
 
 -- Types ---------------------------------------------------------------
@@ -322,14 +374,17 @@ runCircuitM (CircuitM m) = do
         }
   (a, s) <- runStateT m emptyCircuitState
   let errs = _cErrors s
+#if __GLASGOW_HASKELL__ < 904
   unless (isEmptyBag errs) $ liftIO . throwIO $ GHC.mkSrcErr errs
+#else
+  unless (isEmptyBag errs) $ liftIO . throwIO $ GHC.mkSrcErr $ Err.mkMessages errs
+#endif
   pure a
-
 
 errM :: SrcSpan -> String -> CircuitM ()
 errM loc msg = do
   dflags <- GHC.getDynFlags
-  let errMsg = Err.mkLocMessageAnn Nothing Err.SevFatal loc (Outputable.text msg)
+  let errMsg = Err.mkLocMessageAnn Nothing sevFatal loc (Outputable.text msg)
   cErrors %= consBag (mkErrMsg dflags loc Outputable.alwaysQualify errMsg)
 
 -- ghc helpers ---------------------------------------------------------
@@ -366,8 +421,15 @@ tupP pats = noLoc $ TuplePat noExt pats GHC.Boxed
 vecP :: SrcSpanAnnA -> [LPat GhcPs] -> LPat GhcPs
 vecP srcLoc = \case
   [] -> go []
+#if __GLASGOW_HASKELL__ < 904
   as -> L srcLoc $ ParPat noExt $ go as
   where
+#else
+  as -> L srcLoc $ ParPat noExt pL (go as) pR
+  where
+  pL = L (GHC.mkTokenLocation $ locA srcLoc) HsTok
+  pR = L (GHC.mkTokenLocation $ locA srcLoc) HsTok
+#endif
   go :: [LPat GhcPs] -> LPat GhcPs
   go (p@(L l0 _):pats) =
     let
@@ -414,7 +476,14 @@ varE :: SrcSpanAnnA -> GHC.RdrName -> LHsExpr GhcPs
 varE loc rdr = L loc (HsVar noExtField (noLoc rdr))
 
 parenE :: LHsExpr GhcPs -> LHsExpr GhcPs
+#if __GLASGOW_HASKELL__ < 904
 parenE e@(L l _) = L l (HsPar noExt e)
+#else
+parenE e@(L l _) = L l (HsPar noExt pL e pR)
+  where
+  pL = L (GHC.mkTokenLocation $ locA l) HsTok
+  pR = L (GHC.mkTokenLocation $ locA l) HsTok
+#endif
 
 var :: String -> GHC.RdrName
 var = GHC.Unqual . OccName.mkVarOcc
@@ -487,7 +556,12 @@ letE
   -> LHsExpr p
   -- ^ final `in` expressions
   -> LHsExpr p
-letE loc sigs binds expr = L loc (HsLet noExt localBinds expr)
+letE loc sigs binds expr =
+#if __GLASGOW_HASKELL__ < 904
+    L loc (HsLet noExt localBinds expr)
+#else
+    L loc (HsLet noExt tkLet localBinds tkIn expr)
+#endif
   where
 #if __GLASGOW_HASKELL__ >= 902
     localBinds :: HsLocalBinds GhcPs
@@ -495,6 +569,11 @@ letE loc sigs binds expr = L loc (HsLet noExt localBinds expr)
 #else
     localBinds :: LHsLocalBindsLR GhcPs GhcPs
     localBinds = L loc $ HsValBinds noExt valBinds
+#endif
+
+#if __GLASGOW_HASKELL__ >= 904
+    tkLet = L (GHC.mkTokenLocation $ locA loc) HsTok
+    tkIn = L (GHC.mkTokenLocation $ locA loc) HsTok
 #endif
 
     valBinds :: HsValBindsLR GhcPs GhcPs
@@ -524,8 +603,13 @@ lamE pats expr = noLoc $ HsLam noExtField mg
       (noLoc (EmptyLocalBinds noExtField))
 #endif
 
+#if __GLASGOW_HASKELL__ < 904
     grHs :: GenLocated SrcSpan (GRHS GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs)))
     grHs = L noSrcSpan $ GRHS noExt [] expr
+#else
+    grHs :: LGRHS GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
+    grHs =  L noSrcSpanA $ GRHS noExt [] expr
+#endif
 
 -- | Kinda hacky function to get a string name for named ports.
 fromRdrName :: GHC.RdrName -> GHC.FastString
@@ -544,7 +628,7 @@ parseCircuit
   -> CircuitM ()
 parseCircuit = \case
   -- strip out parenthesis
-  L _ (HsPar _ lexp) -> parseCircuit lexp
+  L _ (HsParP lexp) -> parseCircuit lexp
 
   -- a lambda to match the slave ports
   L _ (simpleLambda -> Just ([matchPats], body)) -> do
@@ -558,7 +642,7 @@ parseCircuit = \case
 circuitBody :: LHsExpr GhcPs -> CircuitM ()
 circuitBody = \case
   -- strip out parenthesis
-  L _ (HsPar _ lexp) -> circuitBody lexp
+  L _ (HsParP lexp) -> circuitBody lexp
 
   L loc (HsDo _x _stmtContext (L _ (unsnoc -> Just (stmts, L finLoc finStmt)))) -> do
     circuitLoc .= loc
@@ -627,7 +711,7 @@ bindSlave :: p ~ GhcPs => LPat p -> PortDescription PortName
 bindSlave (L loc expr) = case expr of
   VarPat _ (L _ rdrName) -> Ref (PortName loc (fromRdrName rdrName))
   TuplePat _ lpat _ -> Tuple $ fmap bindSlave lpat
-  ParPat _ lpat -> bindSlave lpat
+  ParPatP lpat -> bindSlave lpat
 #if __GLASGOW_HASKELL__ >= 902
   ConPat _ (L _ (GHC.Unqual occ)) (PrefixCon [] [lpat])
 #elif __GLASGOW_HASKELL__ >= 900
@@ -657,7 +741,7 @@ bindSlave (L loc expr) = case expr of
     PortErr loc
             (Err.mkLocMessageAnn
               Nothing
-              Err.SevFatal
+              sevFatal
               (locA loc)
               (Outputable.text $ "Unhandled pattern " <> show (Data.toConstr pat))
               )
@@ -696,14 +780,14 @@ bindMaster (L loc expr) = case expr of
   ExprWithTySig _ expr' ty -> PortType (hsSigWcType ty) (bindMaster expr')
 #endif
 
-  HsPar _ expr' -> bindMaster expr'
+  HsParP expr' -> bindMaster expr'
 
   -- OpApp _xapp (L _ circuitVar) (L _ infixVar) appR -> k
 
   _ -> PortErr loc
     (Err.mkLocMessageAnn
       Nothing
-      Err.SevFatal
+      sevFatal
       (locA loc)
       (Outputable.text $ "Unhandled expression " <> show (Data.toConstr expr))
       )
@@ -878,8 +962,13 @@ patBind lhs expr = PatBind noExt lhs rhs ([], [])
       noLoc (EmptyLocalBinds noExtField)
 #endif
 
+#if __GLASGOW_HASKELL__ < 904
     gr :: GenLocated SrcSpan (GRHS GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs)))
     gr  = L (locA (getLoc expr)) (GRHS noExt [] expr)
+#else
+    gr :: LGRHS GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
+    gr =  L (noAnnSrcSpan (getLocA expr)) (GRHS noExt [] expr)
+#endif
 
 circuitConstructor :: (?nms :: ExternalNames) => SrcSpanAnnA -> LHsExpr GhcPs
 circuitConstructor loc = varE loc (circuitCon ?nms)
@@ -960,8 +1049,10 @@ unsnoc (x:xs) = Just (x:a, b)
 hsFunTy :: (p ~ GhcPs) => LHsType p -> LHsType p -> HsType p
 hsFunTy =
   HsFunTy noExt
-#if __GLASGOW_HASKELL__ >= 900
+#if __GLASGOW_HASKELL__ >= 900 && __GLASGOW_HASKELL__ < 904
     (HsUnrestrictedArrow GHC.NormalSyntax)
+#elif __GLASGOW_HASKELL__ >= 904
+    (HsUnrestrictedArrow $ L NoTokenLoc HsNormalTok)
 #endif
 
 arrTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
@@ -987,7 +1078,12 @@ gatherTypes = L.traverseOf_ L.cosmos addTypes
       _             -> pure ()
 
 tyEq :: LHsType GhcPs -> LHsType GhcPs -> LHsType GhcPs
-tyEq a b = noLoc $ HsOpTy noExtField a (noLoc eqTyCon_RDR) b
+tyEq a b =
+#if __GLASGOW_HASKELL__ < 904
+  noLoc $ HsOpTy noExtField a (noLoc eqTyCon_RDR) b
+#else
+  noLoc $ HsOpTy noAnn NotPromoted a (noLoc eqTyCon_RDR) b
+#endif
 -- eqTyCon is a special name that has to be exactly correct for ghc to recognise it. In 8.6 this
 -- lives in PrelNames and is called eqTyCon_RDR, in later ghcs it's from TysWiredIn.
 
@@ -1117,15 +1213,27 @@ mkPlugin nms = GHC.defaultPlugin
 warningMsg :: Outputable.SDoc -> GHC.Hsc ()
 warningMsg sdoc = do
   dflags <- GHC.getDynFlags
-#if __GLASGOW_HASKELL__ >= 902
+#if __GLASGOW_HASKELL__ < 902
+  liftIO $ Err.warningMsg dflags sdoc
+#elif __GLASGOW_HASKELL__ >= 902 && __GLASGOW_HASKELL__ < 904
   logger <- GHC.getLogger
   liftIO $ Err.warningMsg logger dflags sdoc
 #else
-  liftIO $ Err.warningMsg dflags sdoc
+  logger <- GHC.getLogger
+  let
+    diagOpts = GHC.initDiagOpts dflags
+    mc = Err.mkMCDiagnostic diagOpts GHC.WarningWithoutFlag
+  liftIO $ GHC.logMsg logger mc noSrcSpan sdoc
 #endif
 
 -- | The actual implementation.
-pluginImpl :: (?nms :: ExternalNames) => [GHC.CommandLineOption] -> GHC.ModSummary -> GHC.HsParsedModule -> GHC.Hsc GHC.HsParsedModule
+pluginImpl ::
+  (?nms :: ExternalNames) => [GHC.CommandLineOption] -> GHC.ModSummary ->
+#if __GLASGOW_HASKELL__ < 904
+  GHC.HsParsedModule -> GHC.Hsc GHC.HsParsedModule
+#else
+  GHC.ParsedResult -> GHC.Hsc GHC.ParsedResult
+#endif
 pluginImpl cliOptions _modSummary m = do
     -- cli options are activated by -fplugin-opt=CircuitNotation:debug
     debug <- case cliOptions of
@@ -1135,8 +1243,15 @@ pluginImpl cliOptions _modSummary m = do
         warningMsg $ Outputable.text $ "CircuitNotation: unknown cli options " <> show cliOptions
         pure False
     hpm_module' <- do
+#if __GLASGOW_HASKELL__ < 904
       transform debug (GHC.hpm_module m)
     let module' = m { GHC.hpm_module = hpm_module' }
+#else
+      transform debug $ GHC.hpm_module $ GHC.parsedResultModule m
+    let parsedResultModule' = (GHC.parsedResultModule m)
+                                { GHC.hpm_module = hpm_module' }
+        module' = m { GHC.parsedResultModule = parsedResultModule' }
+#endif
     return module'
 
 -- Debugging functions -------------------------------------------------
