@@ -36,6 +36,7 @@ module CircuitNotation
   , mkPlugin
   , thName
   , ExternalNames (..)
+  , Direction(..)
   ) where
 
 -- base
