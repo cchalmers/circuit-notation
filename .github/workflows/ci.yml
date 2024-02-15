@@ -68,8 +68,8 @@ jobs:
     - name: Build
       run: |
         cabal build all --write-ghc-environment-files=always
-        ghc -iexample Example
-        ghc -iexample Testing
+        ghc -Wall -Werror -iexample Example
+        ghc -Wall -Werror -iexample Testing
 
     - name: Test
       run: |

@@ -443,7 +443,7 @@ tupP :: p ~ GhcPs => [LPat p] -> LPat p
 tupP [pat] = pat
 tupP pats = noLoc $ TuplePat noExt pats GHC.Boxed
 
-vecP :: SrcSpanAnnA -> [LPat GhcPs] -> LPat GhcPs
+vecP :: (?nms :: ExternalNames) => SrcSpanAnnA -> [LPat GhcPs] -> LPat GhcPs
 vecP srcLoc = \case
   [] -> go []
 #if __GLASGOW_HASKELL__ < 904
@@ -464,7 +464,7 @@ vecP srcLoc = \case
       l1 = l0
 #endif
     in
-      L srcLoc $ conPatIn (L l1 (thName '(:>))) (InfixCon p (go pats))
+      L srcLoc $ conPatIn (L l1 (consPat ?nms)) (InfixCon p (go pats))
   go [] = L srcLoc $ WildPat noExtField
 
 varP :: SrcSpanAnnA -> String -> LPat GhcPs
@@ -1316,6 +1316,7 @@ data ExternalNames = ExternalNames
   , fwdBwdCon :: GHC.RdrName
   , fwdAndBwdTypes :: Direction -> GHC.RdrName
   , trivialBwd :: GHC.RdrName
+  , consPat :: GHC.RdrName
   }
 
 defExternalNames :: ExternalNames
@@ -1330,4 +1331,9 @@ defExternalNames = ExternalNames
       Fwd -> GHC.Unqual (OccName.mkTcOcc "Fwd")
       Bwd -> GHC.Unqual (OccName.mkTcOcc "Bwd")
   , trivialBwd = GHC.Unqual (OccName.mkVarOcc "unitBwd")
+#if __GLASGOW_HASKELL__ > 900
+  , consPat = GHC.Unqual (OccName.mkDataOcc ":>!")
+#else
+  , consPat = GHC.Unqual (OccName.mkDataOcc ":>")
+#endif
   }
