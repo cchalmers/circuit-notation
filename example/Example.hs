@@ -166,6 +166,14 @@ vec0 = circuit \[] -> ()
 vec00 :: Circuit (Vec 0 a) (Vec 0 a)
 vec00 = circuit \[] -> []
 
+fanout :: forall dom. Circuit (DF dom Int) (DF dom Int)
+fanout = circuit $ \a -> do
+  [x] <- go -< a
+  idC -< x
+ where
+  go :: Circuit (DF dom Int) (Vec n (DF dom Int))
+  go = error "Not implemented"
+
 -- test that signals can be duplicated
 dupSignalC0 :: Circuit (Signal dom Bool) (Signal dom Bool, Signal dom Bool)
 dupSignalC0 = circuit $ \x -> (x, x)
