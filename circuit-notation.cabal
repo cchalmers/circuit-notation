@@ -19,8 +19,9 @@ library
     other-modules:
       GHC.Types.Unique.Map
 
-  other-modules:
-    GHC.Types.Unique.Map.Extra
+  if impl(ghc < 9.10)
+    other-modules:
+      GHC.Types.Unique.Map.Extra
 
   -- other-extensions:
   build-depends:
@@ -28,7 +29,7 @@ library
     , clash-prelude >= 1.0
     , containers
     , data-default
-    , ghc (>=8.6 && <8.8) || (>=8.10 && < 9.8)
+    , ghc (>=8.6 && <8.8) || (>=8.10 && < 9.10)
     , lens
     , mtl
     , parsec

@@ -133,7 +133,9 @@ import "ghc" GHC.Types.Unique.Map
 import GHC.Types.Unique.Map
 #endif
 
+#if __GLASGOW_HASKELL__ < 908
 import GHC.Types.Unique.Map.Extra
+#endif
 
 -- clash-prelude
 import Clash.Prelude (Vec((:>), Nil))
@@ -486,7 +488,7 @@ tupT tys = noLoc $ HsTupleTy noExt hsBoxedTuple tys
 
 vecT :: SrcSpanAnnA -> [LHsType GhcPs] -> LHsType GhcPs
 vecT s [] = L s $ HsParTy noExt (conT s (thName ''Vec) `appTy` tyNum s 0 `appTy` (varT s (genLocName s "vec")))
-vecT s tys = L s $ HsParTy noExt (conT s (thName ''Vec) `appTy` tyNum s (length tys) `appTy` head tys)
+vecT s tys@(ty:_) = L s $ HsParTy noExt (conT s (thName ''Vec) `appTy` tyNum s (length tys) `appTy` ty)
 
 tyNum :: SrcSpanAnnA -> Int -> LHsType GhcPs
 tyNum s i = L s (HsTyLit noExtField (HsNumTy GHC.NoSourceText (fromIntegral i)))
@@ -618,8 +620,10 @@ lamE pats expr = noLoc $ HsLam noExtField mg
     mg :: MatchGroup GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
 #if __GLASGOW_HASKELL__ < 906
     mg = MG noExtField matches GHC.Generated
-#else
+#elif __GLASGOW_HASKELL__ < 908
     mg = MG GHC.Generated matches
+#else
+    mg = MG (GHC.Generated GHC.DoPmc) matches
 #endif
 
     matches :: GenLocated SrcSpanAnnL [GenLocated SrcSpanAnnA (Match GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs)))]
@@ -874,18 +878,19 @@ checkCircuit = do
       topNames = portNames Slave slaves <> portNames Master masters
       nameMap = listToUniqMap_C mappend $ topNames <> concatMap bindingNames binds
 
-  duplicateMasters <- concat <$> forM (nonDetUniqMapToList nameMap) \(name, occ) ->
+  duplicateMasters <- concat <$> forM (nonDetUniqMapToList nameMap) \(name, occ) -> do
+    let isIgnored = case unpackFS name of {('_':_) -> True; _ -> False}
+
     case occ of
+      ([], []) -> pure []
       ([_], [_]) -> pure []
-      (ss, ms) -> do
-        unless (head (unpackFS name) == '_') $ do
-          when (null ms) $ errM (locA (head ss)) $ "Slave port " <> show name <> " has no associated master"
-          when (null ss) $ errM (locA (head ms)) $ "Master port " <> show name <> " has no associated slave"
+      (s:_, []) | not isIgnored -> errM (locA s) ("Slave port " <> show name <> " has no associated master") >> pure []
+      ([], m:_) | not isIgnored -> errM (locA m) ("Master port " <> show name <> " has no associated slave") >> pure []
+      (ss@(s:_:_), _) ->
         -- would be nice to show locations of all occurrences here, not sure how to do that while
         -- keeping ghc api
-        when (length ss > 1) $
-          errM (locA (head ss)) $ "Slave port " <> show name <> " defined " <> show (length ss) <> " times"
-
+        errM (locA s) ("Slave port " <> show name <> " defined " <> show (length ss) <> " times") >> pure []
+      (_ss, ms) -> do
         -- if master is defined multiple times, we broadcast it
         if length ms > 1
           then pure [name]
