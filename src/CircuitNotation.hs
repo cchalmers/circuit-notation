@@ -42,7 +42,6 @@ module CircuitNotation
 -- base
 import           Control.Exception
 import qualified Data.Data              as Data
-import           Data.Default
 import           Data.Maybe             (fromMaybe)
 #if __GLASGOW_HASKELL__ >= 900
 #else
@@ -1176,7 +1175,7 @@ completeUnderscores = do
   let addDef :: String -> PortDescription PortName -> CircuitM ()
       addDef suffix = \case
         Ref (PortName loc (unpackFS -> name@('_':_))) -> do
-          let bind = patBind (varP loc (name <> suffix)) (tagE $ varE loc (thName 'def))
+          let bind = patBind (varP loc (name <> suffix)) (tagE $ varE loc (driveVoid ?nms))
           circuitLets <>= [L loc bind]
 
         _ -> pure ()
@@ -1186,7 +1185,6 @@ completeUnderscores = do
         L.traverseOf_ L.cosmos (addDef "_Bwd") bIn
   mapM_ addBind binds
   addBind (Binding undefined masters slaves)
-
 
 -- | Transform declarations in the module by converting circuit blocks.
 transform
@@ -1321,6 +1319,7 @@ data ExternalNames = ExternalNames
   , fwdBwdCon :: GHC.RdrName
   , fwdAndBwdTypes :: Direction -> GHC.RdrName
   , trivialBwd :: GHC.RdrName
+  , driveVoid :: GHC.RdrName
   , consPat :: GHC.RdrName
   }
 
@@ -1335,6 +1334,7 @@ defExternalNames = ExternalNames
   , fwdAndBwdTypes = \case
       Fwd -> GHC.Unqual (OccName.mkTcOcc "Fwd")
       Bwd -> GHC.Unqual (OccName.mkTcOcc "Bwd")
+  , driveVoid = GHC.Unqual (OccName.mkVarOcc "driveVoid")
   , trivialBwd = GHC.Unqual (OccName.mkVarOcc "unitBwd")
 #if __GLASGOW_HASKELL__ > 900
   , consPat = GHC.Unqual (OccName.mkDataOcc ":>!")
