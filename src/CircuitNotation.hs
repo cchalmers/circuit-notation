@@ -1172,8 +1172,8 @@ completeUnderscores = do
   binds <- L.use circuitBinds
   masters <- L.use circuitMasters
   slaves <- L.use circuitSlaves
-  let addDef :: String -> PortDescription PortName -> CircuitM ()
-      addDef suffix = \case
+  let addVoid :: String -> PortDescription PortName -> CircuitM ()
+      addVoid suffix = \case
         Ref (PortName loc (unpackFS -> name@('_':_))) -> do
           let bind = patBind (varP loc (name <> suffix)) (tagE $ varE loc (driveVoid ?nms))
           circuitLets <>= [L loc bind]
@@ -1181,8 +1181,8 @@ completeUnderscores = do
         _ -> pure ()
       addBind :: Binding exp PortName -> CircuitM ()
       addBind (Binding _ bOut bIn) = do
-        L.traverseOf_ L.cosmos (addDef "_Fwd") bOut
-        L.traverseOf_ L.cosmos (addDef "_Bwd") bIn
+        L.traverseOf_ L.cosmos (addVoid "_Fwd") bOut
+        L.traverseOf_ L.cosmos (addVoid "_Bwd") bIn
   mapM_ addBind binds
   addBind (Binding undefined masters slaves)
 

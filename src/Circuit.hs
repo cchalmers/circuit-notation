@@ -56,19 +56,19 @@ newtype DFS2M = DFS2M Bool
 
 -- | For /dev/null-like circuits: always acknowledge incoming data
 --   while never sending out data. Used for ignoring streams with an underscore prefix.
-class Void a where
+class DriveVoid a where
   driveVoid :: a
 
-instance Void () where
+instance DriveVoid () where
   driveVoid = ()
 
-instance (Void a) => Void (Signal dom a) where
+instance (DriveVoid a) => DriveVoid (Signal dom a) where
   driveVoid = pure driveVoid
 
-instance Void (DFM2S a) where
+instance DriveVoid (DFM2S a) where
   driveVoid = DFM2S False (error "void")
 
-instance Void DFS2M where
+instance DriveVoid DFS2M where
   driveVoid = DFS2M True
 
 type instance Fwd (DF dom a) = Signal dom (DFM2S a)
