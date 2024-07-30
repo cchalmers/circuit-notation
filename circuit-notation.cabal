@@ -1,7 +1,7 @@
 -- cabal-version: 2.2
 name:                circuit-notation
 version:             0.1.0.0
--- synopsis:
+synopsis:            A source plugin for manipulating circuits in clash with a arrow notation
 -- description:
 license:             BSD3
 license-file:        LICENSE
