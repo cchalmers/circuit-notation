@@ -7,8 +7,8 @@ license:             BSD3
 license-file:        LICENSE
 author:              Christopher Chalmers
 maintainer:          c.chalmers@me.com
--- copyright:
--- category:
+copyright:           2024 Christopher Chalmers
+category:            Hardware
 build-type:          Simple
 cabal-version:       >=1.10
 
@@ -25,7 +25,7 @@ library
 
   -- other-extensions:
   build-depends:
-      base >=4.12
+      base >=4.12 && <5
     , clash-prelude >= 1.0
     , containers
     , data-default
