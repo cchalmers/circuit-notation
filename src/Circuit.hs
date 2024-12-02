@@ -54,10 +54,22 @@ data DF (dom :: Domain)  a
 data DFM2S a = DFM2S Bool a
 newtype DFS2M = DFS2M Bool
 
-instance Default (DFM2S a) where
-  def = DFM2S False (error "error default")
-instance Default DFS2M where
-  def = DFS2M True
+-- | For /dev/null-like circuits: always acknowledge incoming data
+--   while never sending out data. Used for ignoring streams with an underscore prefix.
+class DriveVoid a where
+  driveVoid :: a
+
+instance DriveVoid () where
+  driveVoid = ()
+
+instance (DriveVoid a) => DriveVoid (Signal dom a) where
+  driveVoid = pure driveVoid
+
+instance DriveVoid (DFM2S a) where
+  driveVoid = DFM2S False (error "void")
+
+instance DriveVoid DFS2M where
+  driveVoid = DFS2M True
 
 type instance Fwd (DF dom a) = Signal dom (DFM2S a)
 type instance Bwd (DF dom a) = Signal dom DFS2M
