@@ -41,6 +41,7 @@ jobs:
           - "9.4.8"
           - "9.6.4"
           - "9.8.2"
+          - "9.10.1"
 
     steps:
     - uses: actions/checkout@v3
@@ -52,6 +53,13 @@ jobs:
       with:
         ghc-version: ${{ matrix.ghc }}
         cabal-version: ${{ matrix.cabal }}
+
+      # This can be dropped once
+      # https://github.com/clash-lang/clash-compiler/pull/2790 is merged.
+    - name: Apply GHC-9.10 cabal project configuration
+      if: matrix.ghc == "9.10.1"
+      run: |
+        mv cabal.ghc-9.10.project cabal.project
 
     - name: Freeze
       run: |

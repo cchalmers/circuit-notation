@@ -72,6 +72,10 @@ import           HscTypes               (throwOneError)
 import qualified GHC.Parser.Annotation     as GHC
 #endif
 
+#if __GLASGOW_HASKELL__ >= 910
+import           GHC.Hs (EpAnn)
+#endif
+
 #if __GLASGOW_HASKELL__ >= 900
 import           GHC.Data.Bag
 import           GHC.Data.FastString       (mkFastString, unpackFS)
@@ -204,13 +208,21 @@ emptyComments = noExtField
 
 locA :: a -> a
 locA = id
-#else
+#elif __GLASGOW_HASKELL__ < 910
 type MsgDoc = Outputable.SDoc
 
-locA :: SrcSpanAnn' a -> SrcSpan
+locA :: SrcAnn a -> SrcSpan
 locA = GHC.locA
 
 noAnnSortKey :: AnnSortKey
+noAnnSortKey = NoAnnSortKey
+#else
+type MsgDoc = Outputable.SDoc
+
+locA :: EpAnn a -> SrcSpan
+locA = GHC.locA
+
+noAnnSortKey :: AnnSortKey a
 noAnnSortKey = NoAnnSortKey
 #endif
 
@@ -230,7 +242,13 @@ sevFatal :: Err.MessageClass
 sevFatal = Err.MCFatal
 #endif
 
-#if __GLASGOW_HASKELL__ > 900
+#if __GLASGOW_HASKELL__ >= 910
+noExt :: NoAnn a => a
+noExt = noAnn
+
+instance NoAnn NoExtField where
+  noAnn = noExtField
+#elif __GLASGOW_HASKELL__ > 900
 noExt :: EpAnn ann
 noExt = EpAnnNotUsed
 #elif __GLASGOW_HASKELL__ > 808
@@ -252,12 +270,18 @@ pattern HsParP e <- HsPar _ e
 
 pattern ParPatP :: LPat p -> Pat p
 pattern ParPatP p <- ParPat _ p
-#else
+#elif __GLASGOW_HASKELL__ < 910
 pattern HsParP :: LHsExpr p -> HsExpr p
 pattern HsParP e <- HsPar _ _ e _
 
 pattern ParPatP :: LPat p -> Pat p
 pattern ParPatP p <- ParPat _ _ p _
+#else
+pattern HsParP :: LHsExpr p -> HsExpr p
+pattern HsParP e <- HsPar _ e
+
+pattern ParPatP :: LPat p -> Pat p
+pattern ParPatP p <- ParPat _ p
 #endif
 
 #if __GLASGOW_HASKELL__ < 906
@@ -430,9 +454,15 @@ conPatIn loc con = ConPat noExt loc con
 conPatIn loc con = ConPatIn loc con
 #endif
 
-#if __GLASGOW_HASKELL__ >= 902
+#if __GLASGOW_HASKELL__ >= 910
+noEpAnn :: NoAnn ann => GenLocated SrcSpan e -> GenLocated (EpAnn ann) e
+noEpAnn (L l e) = L (EpAnn (spanAsAnchor l) noAnn emptyComments) e
+
+noLoc :: NoAnn ann => e -> GenLocated (EpAnn ann) e
+noLoc = noEpAnn . GHC.noLoc
+#elif __GLASGOW_HASKELL__ >= 902
 noEpAnn :: GenLocated SrcSpan e -> GenLocated (SrcAnn ann) e
-noEpAnn (L l e) = L (SrcSpanAnn EpAnnNotUsed l) e
+noEpAnn (L l e) = L (SrcSpanAnn noExt l) e
 
 noLoc :: e -> GenLocated (SrcAnn ann) e
 noLoc = noEpAnn . GHC.noLoc
@@ -451,11 +481,16 @@ vecP srcLoc = \case
 #if __GLASGOW_HASKELL__ < 904
   as -> L srcLoc $ ParPat noExt $ go as
   where
-#else
+#elif __GLASGOW_HASKELL__ < 910
   as -> L srcLoc $ ParPat noExt pL (go as) pR
   where
   pL = L (GHC.mkTokenLocation $ locA srcLoc) HsTok
   pR = L (GHC.mkTokenLocation $ locA srcLoc) HsTok
+#else
+  as -> L srcLoc $ ParPat (pL,pR) (go as)
+  where
+  pL = EpTok $ spanAsAnchor $ locA srcLoc
+  pR = EpTok $ spanAsAnchor $ locA srcLoc
 #endif
   go :: [LPat GhcPs] -> LPat GhcPs
   go (p@(L l0 _):pats) =
@@ -505,11 +540,16 @@ varE loc rdr = L loc (HsVar noExtField (noLoc rdr))
 parenE :: LHsExpr GhcPs -> LHsExpr GhcPs
 #if __GLASGOW_HASKELL__ < 904
 parenE e@(L l _) = L l (HsPar noExt e)
-#else
+#elif __GLASGOW_HASKELL__ < 910
 parenE e@(L l _) = L l (HsPar noExt pL e pR)
   where
   pL = L (GHC.mkTokenLocation $ locA l) HsTok
   pR = L (GHC.mkTokenLocation $ locA l) HsTok
+#else
+parenE e@(L l _) = L l (HsPar (pL,pR) e)
+  where
+  pL = EpTok $ spanAsAnchor $ locA l
+  pR = EpTok $ spanAsAnchor $ locA l
 #endif
 
 var :: String -> GHC.RdrName
@@ -567,8 +607,10 @@ simpleLambda :: HsExpr GhcPs -> Maybe ([LPat GhcPs], LHsExpr GhcPs)
 simpleLambda expr = do
 #if __GLASGOW_HASKELL__ < 906
   HsLam _ (MG _x alts _origin) <- Just expr
-#else
+#elif __GLASGOW_HASKELL__ < 910
   HsLam _ (MG _x alts) <- Just expr
+#else
+  HsLam _ _ (MG _x alts) <- Just expr
 #endif
   L _ [L _ (Match _matchX _matchContext matchPats matchGr)] <- Just alts
   GRHSs _grX grHss _grLocalBinds <- Just matchGr
@@ -590,8 +632,12 @@ letE
 letE loc sigs binds expr =
 #if __GLASGOW_HASKELL__ < 904
     L loc (HsLet noExt localBinds expr)
-#else
+#elif __GLASGOW_HASKELL__ < 908
     L loc (HsLet noExt tkLet localBinds tkIn expr)
+#elif __GLASGOW_HASKELL__ < 910
+    L loc (HsLet noExt tkLet localBinds tkIn expr)
+#else
+    L loc (HsLet (tkLet,tkIn) localBinds expr)
 #endif
   where
 #if __GLASGOW_HASKELL__ >= 902
@@ -602,9 +648,12 @@ letE loc sigs binds expr =
     localBinds = L loc $ HsValBinds noExt valBinds
 #endif
 
-#if __GLASGOW_HASKELL__ >= 904
+#if __GLASGOW_HASKELL__ >= 910
+    tkLet = EpTok $ spanAsAnchor $ locA loc
+    tkIn  = EpTok $ spanAsAnchor $ locA loc
+#elif __GLASGOW_HASKELL__ >= 904
     tkLet = L (GHC.mkTokenLocation $ locA loc) HsTok
-    tkIn = L (GHC.mkTokenLocation $ locA loc) HsTok
+    tkIn  = L (GHC.mkTokenLocation $ locA loc) HsTok
 #endif
 
     valBinds :: HsValBindsLR GhcPs GhcPs
@@ -615,22 +664,33 @@ letE loc sigs binds expr =
 
 -- | Simple construction of a lambda expression
 lamE :: [LPat GhcPs] -> LHsExpr GhcPs -> LHsExpr GhcPs
-lamE pats expr = noLoc $ HsLam noExtField mg
+lamE pats expr =
+#if __GLASGOW_HASKELL__ >= 910
+    noLoc $ HsLam noExt LamSingle mg
+#else
+    noLoc $ HsLam noExtField mg
+#endif
   where
     mg :: MatchGroup GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
 #if __GLASGOW_HASKELL__ < 906
     mg = MG noExtField matches GHC.Generated
 #elif __GLASGOW_HASKELL__ < 908
     mg = MG GHC.Generated matches
-#else
+#elif __GLASGOW_HASKELL__ < 910
     mg = MG (GHC.Generated GHC.DoPmc) matches
+#else
+    mg = MG (GHC.Generated GHC.OtherExpansion GHC.DoPmc) matches
 #endif
 
     matches :: GenLocated SrcSpanAnnL [GenLocated SrcSpanAnnA (Match GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs)))]
     matches = noLoc $ [singleMatch]
 
     singleMatch :: GenLocated SrcSpanAnnA (Match GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs)))
+#if __GLASGOW_HASKELL__ >= 910
+    singleMatch = noLoc $ Match noExt (LamAlt LamSingle) pats grHss
+#else
     singleMatch = noLoc $ Match noExt LambdaExpr pats grHss
+#endif
 
     grHss :: GRHSs GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
     grHss = GRHSs emptyComments [grHs] $
@@ -988,9 +1048,13 @@ decFromBinding dflags Binding {..} = do
    in patBind bindPat bod
 
 patBind :: LPat GhcPs -> LHsExpr GhcPs -> HsBind GhcPs
-patBind lhs expr = PatBind noExt lhs rhs
+patBind lhs expr = 
 #if __GLASGOW_HASKELL__ < 906
-   ([], [])
+  PatBind noExt lhs rhs ([], [])
+#elif __GLASGOW_HASKELL__ < 910
+  PatBind noExt lhs rhs
+#else
+  PatBind noExt lhs (HsNoMultAnn noExt) rhs
 #endif
   where
     rhs :: GRHSs GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
@@ -1037,7 +1101,8 @@ tagE :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsExpr p -> LHsExpr p
 tagE a = varE noSrcSpanA (tagName ?nms) `appE` a
 
 tagTypeCon :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType GhcPs
-tagTypeCon = noLoc (HsTyVar noExt NotPromoted (noLoc (tagTName ?nms)))
+tagTypeCon =
+    noLoc (HsTyVar noExt NotPromoted (noLoc (tagTName ?nms)))
 
 sigPat :: (p ~ GhcPs) => SrcSpanAnnA -> LHsType GhcPs -> LPat p -> LPat p
 sigPat loc ty a = L loc $
@@ -1087,11 +1152,14 @@ unsnoc (x:xs) = Just (x:a, b)
 
 hsFunTy :: (p ~ GhcPs) => LHsType p -> LHsType p -> HsType p
 hsFunTy =
-  HsFunTy noExt
-#if __GLASGOW_HASKELL__ >= 900 && __GLASGOW_HASKELL__ < 904
-    (HsUnrestrictedArrow GHC.NormalSyntax)
+#if __GLASGOW_HASKELL__ >= 910
+    HsFunTy noExt (HsUnrestrictedArrow noExt)
 #elif __GLASGOW_HASKELL__ >= 904
-    (HsUnrestrictedArrow $ L NoTokenLoc HsNormalTok)
+    HsFunTy noExt (HsUnrestrictedArrow $ L NoTokenLoc HsNormalTok)
+#elif __GLASGOW_HASKELL__ >= 900
+    HsFunTy noExt (HsUnrestrictedArrow GHC.NormalSyntax)
+#else
+    HsFunTy noExt
 #endif
 
 arrTy :: p ~ GhcPs => LHsType p -> LHsType p -> LHsType p
