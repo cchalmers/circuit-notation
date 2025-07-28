@@ -11,11 +11,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1752917053,
-        "narHash": "sha256-oI4b1MZ1MR7WLeyZw9k/g6P+707i7RMhdMxkSIBga2Q=",
+        "lastModified": 1753722205,
+        "narHash": "sha256-tfBkzRbiYVX6f0oSnY86Uem/JSsCmYXfAJxW+ZKmWQk=",
         "owner": "clash-lang",
         "repo": "clash-compiler",
-        "rev": "229f243605f5ac88fc4e65076acec650ce1164df",
+        "rev": "43a1c722af29f34c6faf18f14e6cf46a3cfba80f",
         "type": "github"
       },
       "original": {
