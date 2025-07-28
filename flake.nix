@@ -7,7 +7,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         # What version of the GHC compiler to use
-        compiler-version = "ghc910";
+        compiler-version = clash-compiler.ghcVersion.${system};
 
         pkgs = (import clash-compiler.inputs.nixpkgs {
           inherit system;
@@ -26,7 +26,7 @@
       {
         # Expose the overlay which adds circuit-notation
         # The base of the overlay is clash-pkgs
-        overlay = overlay;
+        overlays.default = overlay;
 
         devShells.default = hs-pkgs.shellFor {
           packages = p: [
