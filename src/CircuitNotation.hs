@@ -72,10 +72,6 @@ import           HscTypes               (throwOneError)
 import qualified GHC.Parser.Annotation     as GHC
 #endif
 
-#if __GLASGOW_HASKELL__ >= 910
-import           GHC.Hs (EpAnn)
-#endif
-
 #if __GLASGOW_HASKELL__ >= 900
 import           GHC.Data.Bag
 import           GHC.Data.FastString       (mkFastString, unpackFS)
@@ -107,7 +103,11 @@ import GHC.Driver.Errors.Ppr () -- instance Diagnostic GhcMessage
 import qualified GHC.Driver.Config.Diagnostic as GHC
 import qualified GHC.Driver.Errors.Types      as GHC
 import qualified GHC.Utils.Logger             as GHC
+#if __GLASGOW_HASKELL__ < 910
 import qualified GHC.Parser.PostProcess       as GHC
+#else
+import GHC.Parser.PostProcess () -- instances
+#endif
 #endif
 
 #if __GLASGOW_HASKELL__ > 808
@@ -245,9 +245,6 @@ sevFatal = Err.MCFatal
 #if __GLASGOW_HASKELL__ >= 910
 noExt :: NoAnn a => a
 noExt = noAnn
-
-instance NoAnn NoExtField where
-  noAnn = noExtField
 #elif __GLASGOW_HASKELL__ > 900
 noExt :: EpAnn ann
 noExt = EpAnnNotUsed
@@ -532,7 +529,13 @@ appTy :: LHsType GhcPs -> LHsType GhcPs -> LHsType GhcPs
 appTy a b = noLoc (HsAppTy noExtField a (parenthesizeHsType GHC.appPrec b))
 
 appE :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
-appE fun arg = L noSrcSpanA $ HsApp noExt fun (parenthesizeHsExpr GHC.appPrec arg)
+appE fun arg = L noSrcSpanA $ HsApp
+#if __GLASGOW_HASKELL__ >= 910
+  noExtField
+#else
+  noAnn
+#endif
+  fun (parenthesizeHsExpr GHC.appPrec arg)
 
 varE :: SrcSpanAnnA -> GHC.RdrName -> LHsExpr GhcPs
 varE loc rdr = L loc (HsVar noExtField (noLoc rdr))
@@ -566,7 +569,13 @@ vecE srcLoc = \case
   [] -> go srcLoc []
   as -> parenE $ go srcLoc as
   where
-  go loc (e@(L l _):es) = L loc $ OpApp noExt e (varE l (thName '(:>))) (go loc es)
+  go loc (e@(L l _):es) = L loc $ OpApp
+#if __GLASGOW_HASKELL__ >= 912
+    noExtField
+#else
+    noExt
+#endif
+    e (varE l (thName '(:>))) (go loc es)
   go loc [] = varE loc (thName 'Nil)
 
 tupE :: p ~ GhcPs => SrcSpanAnnA -> [LHsExpr p] -> LHsExpr p
@@ -574,7 +583,13 @@ tupE _ [ele] = ele
 tupE loc elems = L loc $ ExplicitTuple noExt tupArgs GHC.Boxed
   where
 #if __GLASGOW_HASKELL__ >= 902
-    tupArgs = map (Present noExt) elems
+    tupArgs = map
+#if __GLASGOW_HASKELL__ >= 910
+      (Present noExtField)
+#else
+      (Present noAnn)
+#endif
+      elems
 #else
     tupArgs = map (\arg@(L l _) -> L l (Present noExt arg)) elems
 #endif
@@ -612,7 +627,11 @@ simpleLambda expr = do
 #else
   HsLam _ _ (MG _x alts) <- Just expr
 #endif
+#if __GLASGOW_HASKELL__ >= 912
+  L _ [L _ (Match _matchX _matchContext (L _ matchPats) matchGr)] <- Just alts
+#else
   L _ [L _ (Match _matchX _matchContext matchPats matchGr)] <- Just alts
+#endif
   GRHSs _grX grHss _grLocalBinds <- Just matchGr
   [L _ (GRHS _ _ body)] <- Just grHss
   Just (matchPats, body)
@@ -660,7 +679,11 @@ letE loc sigs binds expr =
     valBinds = ValBinds noAnnSortKey hsBinds sigs
 
     hsBinds :: LHsBindsLR GhcPs GhcPs
+#if __GLASGOW_HASKELL__ >= 912
+    hsBinds = binds
+#else
     hsBinds = listToBag binds
+#endif
 
 -- | Simple construction of a lambda expression
 lamE :: [LPat GhcPs] -> LHsExpr GhcPs -> LHsExpr GhcPs
@@ -682,11 +705,18 @@ lamE pats expr =
     mg = MG (GHC.Generated GHC.OtherExpansion GHC.DoPmc) matches
 #endif
 
+#if __GLASGOW_HASKELL__ >= 912
+    matches :: XRec GhcPs [LMatch GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))]
+    matches = noLoc [singleMatch]
+#else
     matches :: GenLocated SrcSpanAnnL [GenLocated SrcSpanAnnA (Match GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs)))]
     matches = noLoc $ [singleMatch]
+#endif
 
     singleMatch :: GenLocated SrcSpanAnnA (Match GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs)))
-#if __GLASGOW_HASKELL__ >= 910
+#if __GLASGOW_HASKELL__ >= 912
+    singleMatch = noLoc $ Match noExtField (LamAlt LamSingle) (L (EpaSpan noSrcSpan) pats) grHss
+#elif __GLASGOW_HASKELL__ >= 910
     singleMatch = noLoc $ Match noExt (LamAlt LamSingle) pats grHss
 #else
     singleMatch = noLoc $ Match noExt LambdaExpr pats grHss
@@ -790,7 +820,11 @@ handleStmtM (L loc stmt) = case stmt of
     -- a regular let bindings
     case letBind of
       HsValBinds _ (ValBinds _ valBinds sigs) -> do
+#if __GLASGOW_HASKELL__ >= 912
+        circuitLets <>= valBinds
+#else
         circuitLets <>= bagToList valBinds
+#endif
         circuitTypes <>= sigs
       _ -> errM (locA loc) ("Unhandled let statement" <> show (Data.toConstr letBind))
   BodyStmt _xbody body _idr _idr' ->
@@ -1035,7 +1069,13 @@ createInputs
   -> PortDescription PortName
   -- ^ master ports
   -> LHsExpr p
-createInputs dir slaves masters = noLoc $ OpApp noExt s2m (varE noSrcSpanA (fwdBwdCon ?nms)) m2s
+createInputs dir slaves masters = noLoc $ OpApp
+#if __GLASGOW_HASKELL__ >= 912
+  noExtField
+#else
+  noExt
+#endif
+  s2m (varE noSrcSpanA (fwdBwdCon ?nms)) m2s
   where
   m2s = expWithSuffix (revDirec dir) masters
   s2m = expWithSuffix dir slaves
@@ -1048,13 +1088,13 @@ decFromBinding dflags Binding {..} = do
    in patBind bindPat bod
 
 patBind :: LPat GhcPs -> LHsExpr GhcPs -> HsBind GhcPs
-patBind lhs expr = 
+patBind lhs expr =
 #if __GLASGOW_HASKELL__ < 906
   PatBind noExt lhs rhs ([], [])
 #elif __GLASGOW_HASKELL__ < 910
   PatBind noExt lhs rhs
 #else
-  PatBind noExt lhs (HsNoMultAnn noExt) rhs
+  PatBind noExtField lhs (HsNoMultAnn noExtField) rhs
 #endif
   where
     rhs :: GRHSs GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
@@ -1153,7 +1193,7 @@ unsnoc (x:xs) = Just (x:a, b)
 hsFunTy :: (p ~ GhcPs) => LHsType p -> LHsType p -> HsType p
 hsFunTy =
 #if __GLASGOW_HASKELL__ >= 910
-    HsFunTy noExt (HsUnrestrictedArrow noExt)
+    HsFunTy noExtField (HsUnrestrictedArrow noAnn)
 #elif __GLASGOW_HASKELL__ >= 904
     HsFunTy noExt (HsUnrestrictedArrow $ L NoTokenLoc HsNormalTok)
 #elif __GLASGOW_HASKELL__ >= 900
@@ -1189,7 +1229,13 @@ tyEq a b =
 #if __GLASGOW_HASKELL__ < 904
   noLoc $ HsOpTy noExtField a (noLoc eqTyCon_RDR) b
 #else
-  noLoc $ HsOpTy noAnn NotPromoted a (noLoc eqTyCon_RDR) b
+  noLoc $ HsOpTy
+#if __GLASGOW_HASKELL__ >= 912
+    noExtField
+#else
+    noExt
+#endif
+    NotPromoted a (noLoc eqTyCon_RDR) b
 #endif
 -- eqTyCon is a special name that has to be exactly correct for ghc to recognise it. In 8.6 this
 -- lives in PrelNames and is called eqTyCon_RDR, in later ghcs it's from TysWiredIn.
