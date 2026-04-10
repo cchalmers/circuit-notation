@@ -43,6 +43,9 @@ module CircuitNotation
 import           Control.Exception
 import qualified Data.Data              as Data
 import           Data.Default
+#if __GLASGOW_HASKELL__ >= 914
+import           Data.List.NonEmpty     (NonEmpty((:|)))
+#endif
 import           Data.Maybe             (fromMaybe)
 #if __GLASGOW_HASKELL__ >= 900
 #else
@@ -600,7 +603,11 @@ unL (L _ a) = a
 -- | Get a ghc name from a TH name that's known to be unique.
 thName :: TH.Name -> GHC.RdrName
 thName nm =
+#if __GLASGOW_HASKELL__ >= 914
+  case Convert.thRdrNameGuesses False nm of
+#else
   case Convert.thRdrNameGuesses nm of
+#endif
     [name] -> name
     _      -> error "thName called on a non NameG Name"
 
@@ -633,7 +640,11 @@ simpleLambda expr = do
   L _ [L _ (Match _matchX _matchContext matchPats matchGr)] <- Just alts
 #endif
   GRHSs _grX grHss _grLocalBinds <- Just matchGr
+#if __GLASGOW_HASKELL__ >= 914
+  L _ (GRHS _ _ body) :| [] <- Just grHss
+#else
   [L _ (GRHS _ _ body)] <- Just grHss
+#endif
   Just (matchPats, body)
 
 -- | Create a simple let binding.
@@ -723,7 +734,13 @@ lamE pats expr =
 #endif
 
     grHss :: GRHSs GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
-    grHss = GRHSs emptyComments [grHs] $
+    grHss = GRHSs emptyComments
+#if __GLASGOW_HASKELL__ >= 914
+      (grHs :| [])
+#else
+      [grHs]
+#endif
+      $
 #if __GLASGOW_HASKELL__ >= 902
       (EmptyLocalBinds noExtField)
 #else
@@ -843,7 +860,9 @@ bindSlave (L loc expr) = case expr of
   VarPat _ (L _ rdrName) -> Ref (PortName loc (fromRdrName rdrName))
   TuplePat _ lpat _ -> Tuple $ fmap bindSlave lpat
   ParPatP lpat -> bindSlave lpat
-#if __GLASGOW_HASKELL__ >= 902
+#if __GLASGOW_HASKELL__ >= 914
+  ConPat _ (L _ (GHC.Unqual occ)) (PrefixCon [lpat])
+#elif __GLASGOW_HASKELL__ >= 902
   ConPat _ (L _ (GHC.Unqual occ)) (PrefixCon [] [lpat])
 #elif __GLASGOW_HASKELL__ >= 900
   ConPat _ (L _ (GHC.Unqual occ)) (PrefixCon [lpat])
@@ -1093,12 +1112,20 @@ patBind lhs expr =
   PatBind noExt lhs rhs ([], [])
 #elif __GLASGOW_HASKELL__ < 910
   PatBind noExt lhs rhs
+#elif __GLASGOW_HASKELL__ >= 914
+  PatBind noExtField lhs (HsUnannotated EpPatBind) rhs
 #else
   PatBind noExtField lhs (HsNoMultAnn noExtField) rhs
 #endif
   where
     rhs :: GRHSs GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
-    rhs = GRHSs emptyComments [gr] $
+    rhs = GRHSs emptyComments
+#if __GLASGOW_HASKELL__ >= 914
+      (gr :| [])
+#else
+      [gr]
+#endif
+      $
 #if __GLASGOW_HASKELL__ >= 902
       EmptyLocalBinds noExtField
 #else
@@ -1121,6 +1148,9 @@ runCircuitFun loc = varE loc (runCircuitName ?nms)
 
 
 #if __GLASGOW_HASKELL__ < 902
+prefixCon :: [arg] -> HsConDetails arg rec
+prefixCon a = PrefixCon a
+#elif __GLASGOW_HASKELL__ >= 914
 prefixCon :: [arg] -> HsConDetails arg rec
 prefixCon a = PrefixCon a
 #else
@@ -1193,7 +1223,11 @@ unsnoc (x:xs) = Just (x:a, b)
 hsFunTy :: (p ~ GhcPs) => LHsType p -> LHsType p -> HsType p
 hsFunTy =
 #if __GLASGOW_HASKELL__ >= 910
+#if __GLASGOW_HASKELL__ >= 914
+    HsFunTy noExtField (HsUnannotated (EpArrow noAnn))
+#else
     HsFunTy noExtField (HsUnrestrictedArrow noAnn)
+#endif
 #elif __GLASGOW_HASKELL__ >= 904
     HsFunTy noExt (HsUnrestrictedArrow $ L NoTokenLoc HsNormalTok)
 #elif __GLASGOW_HASKELL__ >= 900

@@ -42,6 +42,7 @@ jobs:
           - "9.8.4"
           - "9.10.3"
           - "9.12.4"
+          - "9.14.1"
 
     steps:
     - uses: actions/checkout@v3
