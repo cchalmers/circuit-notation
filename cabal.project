@@ -1,2 +1,12 @@
 packages: .
 
+-- GHC 9.14 pulls in newer compiler-bundled libraries than some transitive
+-- Hackage bounds currently allow, but this specific package set builds
+-- successfully.
+allow-newer:
+  these:base,
+  indexed-traversable-instances:base,
+  indexed-traversable:base,
+  indexed-traversable:containers,
+  string-interpolate:template-haskell,
+  boring:base
