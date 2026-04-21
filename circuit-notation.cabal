@@ -1,25 +1,25 @@
--- cabal-version: 2.2
+cabal-version:       2.4
 name:                circuit-notation
 version:             0.1.0.0
 synopsis:            A source plugin for manipulating circuits in clash with a arrow notation
 -- description:
-license:             BSD3
+license:             BSD-3-Clause
 license-file:        LICENSE
 author:              Christopher Chalmers
 maintainer:          c.chalmers@me.com
 copyright:           2024 Christopher Chalmers
 category:            Hardware
 build-type:          Simple
-cabal-version:       >=1.10
+tested-with:
+    GHC ==9.6.7
+  , GHC ==9.8.4
+  , GHC ==9.10.3
+  , GHC ==9.12.4
 
 library
   exposed-modules:     CircuitNotation Circuit
 
-  if impl(ghc < 9.2)
-    other-modules:
-      GHC.Types.Unique.Map
-
-  if impl(ghc < 9.10)
+  if impl(ghc < 9.8)
     other-modules:
       GHC.Types.Unique.Map.Extra
 
@@ -29,7 +29,7 @@ library
     , clash-prelude >= 1.0
     , containers
     , data-default
-    , ghc (>=8.6 && <8.8) || (>=8.10 && < 9.12)
+    , ghc >= 9.6 && < 9.13
     , lens
     , mtl
     , parsec

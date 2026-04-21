@@ -10,10 +10,6 @@
 For testing the circuit notation.
 -}
 
-{-# LANGUAGE CPP #-}
-#if __GLASGOW_HASKELL__ < 810
-{-# LANGUAGE Arrows #-}
-#endif
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds#-}
 {-# LANGUAGE GADTs #-}

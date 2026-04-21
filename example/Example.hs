@@ -11,16 +11,11 @@ This file contains examples of using the Circuit Notation.
 -}
 
 {-# LANGUAGE BlockArguments      #-}
-{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE DeriveFunctor       #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeOperators       #-}
-
-#if __GLASGOW_HASKELL__ < 810
-{-# LANGUAGE Arrows              #-}
-#endif
 
 {-# OPTIONS -fplugin=CircuitNotation #-}
 {-# OPTIONS -fplugin-opt=CircuitNotation:debug #-}
@@ -41,11 +36,6 @@ import           Clash.Prelude
 
 idCircuit :: Circuit a a
 idCircuit = idC
-
-#if __GLASGOW_HASKELL__ < 810
-swapC0 :: Circuit (a,b) (b,a)
-swapC0 = id $ circuit $ \ ~(a,b) -> ~(b,a)
-#endif
 
 swapC1 :: Circuit (a,b) (b,a)
 swapC1 = id $ circuit $ \ ~(a,b) -> (b,a)

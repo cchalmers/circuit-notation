@@ -10,7 +10,6 @@
 This file contains the 'Circuit' type, that the notation describes.
 -}
 
-{-# LANGUAGE CPP                    #-}
 {-# LANGUAGE DataKinds              #-}
 {-# LANGUAGE DeriveFunctor          #-}
 {-# LANGUAGE GADTs                  #-}
@@ -28,7 +27,6 @@ module Circuit where
 
 import           Clash.Prelude
 
-#if __GLASGOW_HASKELL__ > 900
 -- | Unsafe version of ':>'. Will fail if applied to empty vectors. This is used to
 -- workaround spurious incomplete pattern match warnings generated in newer GHC
 -- versions.
@@ -36,7 +34,6 @@ pattern (:>!) :: a -> Vec n a -> Vec (n + 1) a
 pattern (:>!) x xs <- (\ys -> (head ys, tail ys) -> (x,xs))
 {-# COMPLETE (:>!) #-}
 infixr 5 :>!
-#endif
 
 type family Fwd a
 type family Bwd a
