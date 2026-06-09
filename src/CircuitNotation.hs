@@ -92,7 +92,7 @@ import GHC.Types.Unique.Map.Extra
 #endif
 
 -- clash-prelude
-import Clash.Prelude (Vec((:>), Nil))
+import Clash.Prelude (Vec((:>), Nil), bundle, unbundle)
 
 -- lens
 import qualified Control.Lens           as L
@@ -127,6 +127,10 @@ isSomeVar s = \case
 
 isCircuitVar :: p ~ GhcPs => HsExpr p -> Bool
 isCircuitVar = isSomeVar "circuit"
+
+-- | Is the variable for the value-level circuit keyword?
+isCircuitSVar :: p ~ GhcPs => HsExpr p -> Bool
+isCircuitSVar = isSomeVar "circuitS"
 
 isDollar :: p ~ GhcPs => HsExpr p -> Bool
 isDollar = isSomeVar "$"
@@ -255,6 +259,8 @@ data CircuitState dec exp nm = CircuitState
     -- ^ type signatures in let bindings
     , _circuitLets    :: [dec]
     -- ^ user defined let expression inside the circuit
+    , _circuitCompletes :: [dec]
+    -- ^ generated bindings that complete underscored ports
     , _circuitBinds   :: [Binding exp nm]
     -- ^ @out <- circuit <- in@ statements
     , _circuitMasters :: PortDescription nm
@@ -288,6 +294,7 @@ runCircuitM (CircuitM m) = do
         , _circuitSlaves = Tuple []
         , _circuitTypes = []
         , _circuitLets = []
+        , _circuitCompletes = []
         , _circuitBinds = []
         , _circuitMasters = Tuple []
         , _portVarTypes = emptyUniqMap
@@ -976,6 +983,7 @@ circuitQQExpM = do
   dflags <- GHC.getDynFlags
   binds <- L.use circuitBinds
   lets <- L.use circuitLets
+  completes <- L.use circuitCompletes
   letTypes <- L.use circuitTypes
   slaves <- L.use circuitSlaves
   masters <- L.use circuitMasters
@@ -985,7 +993,7 @@ circuitQQExpM = do
   -- errors on a bus are reported on the offending statement rather than at
   -- the end of the circuit block (see tests/fixtures/BusError.hs).
   let decFromBinding' b@Binding{bCircuit = L cloc _} = L cloc (decFromBinding dflags b)
-  let decs = lets <> map decFromBinding' binds
+  let decs = lets <> completes <> map decFromBinding' binds
 
   let pats = bindOutputs dflags Fwd masters slaves
       res  = createInputs Bwd slaves masters
@@ -998,6 +1006,154 @@ circuitQQExpM = do
     (\(Binding _ outs ins) -> gatherTypes outs >> gatherTypes ins)
     binds
   mapM_ gatherTypes [masters, slaves]
+
+  pure $ circuitConstructor noSrcSpanA `appE` lamE [pats] body
+
+-- Value circuits (circuitS) --------------------------------------------
+
+-- | The number of value-level ('FwdPat' / 'FwdExpr') ports in a port
+-- description.
+countFwdPorts :: PortDescription PortName -> Int
+countFwdPorts p = length [() | FwdPat{} <- L.universe p] + length [() | FwdExpr{} <- L.universe p]
+
+-- | Replace each value-level ('Signal' / 'Fwd') pattern with a reference to a
+-- generated signal bus variable (@prefix <> show i@), collecting the original
+-- value-level patterns in order.
+replaceFwdPats
+  :: String
+  -> PortDescription PortName
+  -> State (Int, [LPat GhcPs]) (PortDescription PortName)
+replaceFwdPats prefix = L.transformM \case
+  FwdPat lpat@(L loc _) -> do
+    (i, pats) <- get
+    put (i + 1, pats <> [lpat])
+    pure (FwdPat (varP loc (prefix <> show i)))
+  p -> pure p
+
+-- | Replace each value-level ('Signal' / 'Fwd') expression with a reference
+-- to a generated signal bus variable (@prefix <> show i@), collecting the
+-- original value-level expressions in order.
+replaceFwdExprs
+  :: String
+  -> PortDescription PortName
+  -> State (Int, [LHsExpr GhcPs]) (PortDescription PortName)
+replaceFwdExprs prefix = L.transformM \case
+  FwdExpr lexpr@(L loc _) -> do
+    (i, exprs) <- get
+    put (i + 1, exprs <> [lexpr])
+    pure (FwdExpr (varE loc (var (prefix <> show i))))
+  p -> pure p
+
+-- | The @circuitS@ (value-level circuit) version of 'circuitQQExpM'.
+--
+-- Value-level circuits describe a circuit's logic over the values sampled
+-- each clock cycle. The boundary between bus land and value land is marked
+-- with @Signal@ (or @Fwd@): @Signal n <- ...@ binds @n@ to the per-cycle
+-- value carried on that bus, and @... -< Signal e@ injects the per-cycle
+-- value @e@ back onto a bus.
+--
+-- All the value-level bindings (the @let@s of the do block) are collected
+-- into a single pure function, @circuitLogic@, whose arguments are the
+-- @Signal@-bound values and whose results are the @Signal@-injected
+-- expressions. It is lifted to the signal level with 'fmap', using
+-- 'bundle' / 'unbundle' and a lazy let binding to tie feedback loops:
+--
+-- @
+-- circuitLogic = \\(ins) -> let \<user lets\> in (outs)
+-- (outBuses) = unbundle (fmap circuitLogic (bundle (inBuses)))
+-- @
+--
+-- The buses themselves are wired up exactly as for an ordinary @circuit@.
+circuitSQQExpM
+  :: (p ~ GhcPs, ?nms :: ExternalNames)
+  => CircuitM (LHsExpr p)
+circuitSQQExpM = do
+  slaves0 <- L.use circuitSlaves
+  masters0 <- L.use circuitMasters
+  binds0 <- L.use circuitBinds
+
+  let boundaryCount =
+        sum (map countFwdPorts (slaves0 : masters0 : concatMap (\b -> [bIn b, bOut b]) binds0))
+
+  -- Without any value-level (Signal/Fwd) ports there is no boundary to lift;
+  -- behave exactly like an ordinary circuit.
+  if boundaryCount == 0 then circuitQQExpM else circuitSQQExpM'
+
+circuitSQQExpM'
+  :: (p ~ GhcPs, ?nms :: ExternalNames)
+  => CircuitM (LHsExpr p)
+circuitSQQExpM' = do
+  checkCircuit
+
+  dflags <- GHC.getDynFlags
+  loc <- L.use circuitLoc
+
+  -- read the ports after checkCircuit, which may have rewritten them
+  slaves0 <- L.use circuitSlaves
+  masters0 <- L.use circuitMasters
+  binds0 <- L.use circuitBinds
+
+  let inPrefix  = genLocName loc "valIn" <> "_"
+      outPrefix = genLocName loc "valOut" <> "_"
+      logicName = genLocName loc "circuitLogic"
+
+  -- Value patterns become the arguments of circuitLogic (values sampled off
+  -- buses) ...
+  let inM = do
+        s <- replaceFwdPats inPrefix slaves0
+        bs <- traverse (\b -> (\p -> b { bIn = p }) <$> replaceFwdPats inPrefix (bIn b)) binds0
+        pure (s, bs)
+      ((slaves1, binds1), (numIns, inPats)) = runState inM (0, [])
+
+  -- ... and value expressions become its results (values written to buses).
+  let outM = do
+        bs <- traverse (\b -> (\p -> b { bOut = p }) <$> replaceFwdExprs outPrefix (bOut b)) binds1
+        m <- replaceFwdExprs outPrefix masters0
+        pure (bs, m)
+      ((binds2, masters1), (numOuts, outExprs)) = runState outM (0, [])
+
+  circuitSlaves .= slaves1
+  circuitMasters .= masters1
+  circuitBinds .= binds2
+
+  -- In a value circuit the do-block lets are value-level; they form the body
+  -- of circuitLogic rather than ending up in the outer (bus-level) let.
+  lets <- L.use circuitLets
+  completes <- L.use circuitCompletes
+  letTypes <- L.use circuitTypes
+
+  let logicLam = lamE [tupP inPats] (letE noSrcSpanA letTypes lets (tupE noSrcSpanA outExprs))
+      logicBind = L loc $ patBind (varP noSrcSpanA logicName) logicLam
+
+  -- (outBuses) = unbundle (fmap circuitLogic (bundle (inBuses)))
+  -- bundle/unbundle are only needed when there is more than one bus. With no
+  -- inputs at all the logic is constant, so it is mapped over @pure ()@.
+  let inVars = map (\i -> varE noSrcSpanA (var (inPrefix <> show i))) [0 .. numIns - 1]
+      outVarPs = map (\i -> varP noSrcSpanA (outPrefix <> show i)) [0 .. numOuts - 1]
+
+      bundled = case inVars of
+        []  -> varE noSrcSpanA (thName 'pure) `appE` tupE noSrcSpanA []
+        [e] -> e
+        es  -> varE noSrcSpanA (thName 'bundle) `appE` tupE noSrcSpanA es
+      lifted = varE noSrcSpanA (thName 'fmap) `appE` varE noSrcSpanA (var logicName) `appE` bundled
+
+      knotPat = case outVarPs of
+        [] -> nlWildPat
+        ps -> tupP ps
+      knotExpr = if numOuts > 1
+        then varE noSrcSpanA (thName 'unbundle) `appE` lifted
+        else lifted
+      knotBind = L loc $ patBind knotPat knotExpr
+
+  -- The bus plumbing is generated exactly as in 'circuitQQExpM'.
+  let decFromBinding' b@Binding{bCircuit = L cloc _} = L cloc (decFromBinding dflags b)
+  let decs = logicBind : knotBind : completes <> map decFromBinding' binds2
+
+  let pats = bindOutputs dflags Fwd masters1 slaves1
+      res  = createInputs Bwd slaves1 masters1
+
+      body :: LHsExpr GhcPs
+      body = letE noSrcSpanA [] decs res
 
   pure $ circuitConstructor noSrcSpanA `appE` lamE [pats] body
 
@@ -1020,7 +1176,7 @@ completeUnderscores = do
       addDef suffix = \case
         Ref (PortName loc (unpackFS -> name@('_':_))) -> do
           let bind = patBind (varP loc (name <> suffix)) (tagE $ varE loc (thName 'def))
-          circuitLets <>= [L loc bind]
+          circuitCompletes <>= [L loc bind]
 
         _ -> pure ()
       addBind :: Binding exp PortName -> CircuitM ()
@@ -1046,33 +1202,42 @@ transform debug = SYB.everywhereM (SYB.mkM transform') where
         x <- parseCircuit lappB >> completeUnderscores >> circuitQQExpM
         when debug $ ppr x
         pure x
+    | isCircuitSVar circuitVar = runCircuitM $ do
+        x <- parseCircuit lappB >> completeUnderscores >> circuitSQQExpM
+        when debug $ ppr x
+        pure x
 
   -- `circuit $` application
   transform' (L _ (OpApp _xapp c@(L _ circuitVar) (L _ infixVar) appR))
-    | isDollar infixVar && dollarChainIsCircuit circuitVar = do
+    | isDollar infixVar && dollarChainIsCircuit "circuit" circuitVar = do
         runCircuitM $ do
           x <- parseCircuit appR >> completeUnderscores >> circuitQQExpM
           when debug $ ppr x
-          pure (dollarChainReplaceCircuit x c)
+          pure (dollarChainReplaceCircuit "circuit" x c)
+    | isDollar infixVar && dollarChainIsCircuit "circuitS" circuitVar = do
+        runCircuitM $ do
+          x <- parseCircuit appR >> completeUnderscores >> circuitSQQExpM
+          when debug $ ppr x
+          pure (dollarChainReplaceCircuit "circuitS" x c)
 
   transform' e = pure e
 
--- | check if circuit is applied via `a $ chain $ of $ dollars`.
-dollarChainIsCircuit :: HsExpr GhcPs -> Bool
-dollarChainIsCircuit = \case
-  HsVar _ (L _ v)                             -> v == GHC.mkVarUnqual "circuit"
-  OpApp _xapp _appL (L _ infixVar) (L _ appR) -> isDollar infixVar && dollarChainIsCircuit appR
+-- | check if the named circuit keyword is applied via `a $ chain $ of $ dollars`.
+dollarChainIsCircuit :: GHC.FastString -> HsExpr GhcPs -> Bool
+dollarChainIsCircuit nm = \case
+  HsVar _ (L _ v)                             -> v == GHC.mkVarUnqual nm
+  OpApp _xapp _appL (L _ infixVar) (L _ appR) -> isDollar infixVar && dollarChainIsCircuit nm appR
   _                                           -> False
 
 -- | Replace the circuit if it's part of a chain of `$`.
-dollarChainReplaceCircuit :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
-dollarChainReplaceCircuit circuitExpr (L loc app) = case app of
+dollarChainReplaceCircuit :: GHC.FastString -> LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
+dollarChainReplaceCircuit nm circuitExpr (L loc app) = case app of
   HsVar _ (L _loc v)
-    -> if v == GHC.mkVarUnqual "circuit"
+    -> if v == GHC.mkVarUnqual nm
          then circuitExpr
          else error "dollarChainAddCircuit: not a circuit"
   OpApp xapp appL (L infixLoc infixVar) appR
-    -> L loc $ OpApp xapp appL (L infixLoc infixVar) (dollarChainReplaceCircuit circuitExpr appR)
+    -> L loc $ OpApp xapp appL (L infixLoc infixVar) (dollarChainReplaceCircuit nm circuitExpr appR)
   t -> error $ "dollarChainAddCircuit unhandled case " <> showC t
 
 -- | The plugin for circuit notation.
