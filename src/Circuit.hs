@@ -207,3 +207,12 @@ pattern BusTagBundle :: BusTagBundle t a => BusTagUnbundled t a -> BusTag t a
 pattern BusTagBundle a <- (taggedUnbundle -> a) where
   BusTagBundle a = taggedBundle a
 {-# COMPLETE BusTagBundle #-}
+
+-- | A tagged 'Signal' bus. Used by the plugin at the value boundary of
+-- 'circuitS' blocks: matching or constructing with 'SigTag' pins the bus
+-- type itself (the tag) to be a 'Signal', which is what the value boundary
+-- requires. Since 'Fwd' is not injective, plain 'BusTag' would leave the bus
+-- type ambiguous and type inference for nested circuits would fail.
+pattern SigTag :: Signal dom a -> BusTag (Signal dom a) (Signal dom a)
+pattern SigTag s = BusTag s
+{-# COMPLETE SigTag #-}

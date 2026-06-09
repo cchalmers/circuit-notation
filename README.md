@@ -34,7 +34,8 @@ Notes:
 
 - Pattern match down to *exactly* the `Signal` layer, no shallower; the
   plugin cannot (yet) know which types contain signals, so the boundary has
-  to be explicit.
+  to be explicit. Marking a bus that is not a `Signal` (e.g. a `Vec` of
+  signals) is a type error on the offending statement.
 - In a `circuitS` block, `let` statements are value-level: they form the body
   of the generated logic function and cannot define new buses or circuits.
 - All buses crossing the value boundary must share the same clock domain
