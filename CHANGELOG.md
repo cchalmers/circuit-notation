@@ -1,13 +1,15 @@
 # Revision history for `circuit-notations`
 
-## Unreleased
+## 0.3.0.0 -- Unreleased
 
 * Add value-level ports via the new `SignalV` and `FwdV` markers in
   `circuit` blocks. The circuit's logic is written over the values sampled
   each clock cycle; the plugin lifts it back to the signal level with
   `fmap`/`bundle`/`unbundle` and ties feedback loops with a lazy let
-  binding. The bus-level `Signal`/`Fwd` markers keep their existing meaning
-  and the two levels can be mixed freely in one block. See the README and
+  binding. The bus-level markers still bind the raw forward channel and mix
+  freely with value markers in one block; `Fwd` works on any bus, while the
+  bus-level `Signal` (and new `DSignal`) markers now additionally enforce
+  the bus type, which also drives type inference. See the README and
   example/ValueCircuits.hs.
 
   A block can span several clock domains: the value-level bindings are

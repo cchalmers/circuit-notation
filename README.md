@@ -12,9 +12,10 @@ ordinary `circuit` block:
 - `SignalV n <- … -< …` binds `n` to the per-cycle value carried on that bus.
 - `… -< SignalV e` injects the per-cycle value `e` back onto a bus.
 
-(The bus-level `Signal`/`Fwd` markers, which bind the raw forward channel,
-keep their existing meaning; the two levels can be mixed freely in one
-block.)
+(The bus-level markers, which bind the raw forward channel, still exist and
+can be mixed freely with value markers in one block: `Fwd` works on any bus,
+while `Signal` and `DSignal` additionally enforce that the bus is a `Signal`
+or `DSignal` — which also helps type inference, since it pins the bus type.)
 
 The two value markers differ in what buses they accept:
 
@@ -39,8 +40,8 @@ Everything in between — the `let` bindings of the do block — is ordinary pur
 Haskell, and feedback loops are written as ordinary recursive `let`s:
 
 ```haskell
-counter3 :: Circuit (Signal dom Bool) (Signal dom Int)
-counter3 = circuit \_bs -> do
+counter3 :: Circuit () (Signal dom Int)
+counter3 = circuit do
   SignalV n <- registerC 0 -< SignalV n'    -- n  :: Int (this cycle's value)
   SignalV m <- registerC 8 -< SignalV m'    -- m  :: Int
   let n' = n + 1                            -- pure, value-level

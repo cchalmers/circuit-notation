@@ -218,14 +218,21 @@ data PortName = PortName SrcSpanAnnA GHC.FastString
 instance Show PortName where
   show (PortName _ fs) = GHC.unpackFS fs
 
--- | Which keyword marked a port. @Signal@ and @Fwd@ are bus-level (and
--- interchangeable): they bind/inject the raw forward channel. @SignalV@ and
--- @FwdV@ mark the /value/ boundary, binding or injecting the per-cycle
--- value: @SignalV@ asserts the bus /is/ a 'Signal' (generating the concrete
--- @SigTag@, which drives type inference) while @FwdV@ samples the forward
--- channel of any signal-like bus (generating the class-constrained
--- @FwdTag@, which requires the bus type to be determined by context).
-data SigMarker = SignalMarker | FwdMarker | SignalVMarker | FwdVMarker | DSignalVMarker
+-- | Which keyword marked a port.
+--
+-- The bus-level markers bind/inject the raw forward channel: @Fwd@ works on
+-- any bus, while @Signal@ and @DSignal@ additionally /enforce/ (via the
+-- concrete @SigTag@/@DSigTag@, which also drives type inference) that the
+-- bus is a 'Signal' or @DSignal@ respectively.
+--
+-- The @...V@ markers mark the /value/ boundary, binding or injecting the
+-- per-cycle value: @SignalV@ and @DSignalV@ assert the bus type like their
+-- bus-level counterparts, while @FwdV@ samples the forward channel of any
+-- signal-like bus (generating the class-constrained @FwdTag@, which
+-- requires the bus type to be determined by context).
+data SigMarker
+  = SignalMarker | FwdMarker | DSignalMarker
+  | SignalVMarker | FwdVMarker | DSignalVMarker
 
 -- | Is this marker a value boundary (@SignalV@/@FwdV@/@DSignalV@)?
 isValueMarker :: SigMarker -> Bool
@@ -829,7 +836,7 @@ bindWithSuffix dflags dir = \case
   Lazy loc p -> tildeP loc $ bindWithSuffix dflags dir p
   -- XXX: propagate location
   FwdExpr _ (L _ _) -> nlWildPat
-  FwdPat _ lpat -> tagP lpat
+  FwdPat mk lpat -> sigTagP mk lpat
   SigTagExpr _ (L _ _) -> nlWildPat
   SigTagPat mk lpat -> sigTagP mk lpat
   PortType ty p -> tagTypeP dir ty $ bindWithSuffix dflags dir p
@@ -864,7 +871,7 @@ expWithSuffix dir = \case
   -- laziness only affects the pattern side
   Lazy _ p   -> expWithSuffix dir p
   PortErr _ _ -> error "expWithSuffix PortErr!"
-  FwdExpr _ lexpr -> tagE lexpr
+  FwdExpr mk lexpr -> sigTagE mk lexpr
   FwdPat _ (L l _) -> tagE $ varE l (trivialBwd ?nms)
   SigTagExpr mk lexpr -> sigTagE mk lexpr
   -- the backwards channel of a signal bus is trivial, so a plain (untyped)
@@ -944,14 +951,16 @@ sigTagP mk a@(L l _) = L l (conPatIn (noLoc (markerTagName mk)) (prefixCon [a]))
 sigTagE :: (p ~ GhcPs, ?nms :: ExternalNames) => SigMarker -> LHsExpr p -> LHsExpr p
 sigTagE mk a@(L l _) = varE l (markerTagName mk) `appE` a
 
--- only value markers reach the SigTag* constructors, but keep this total
+-- | The tag wrapped around a marked port: plain 'BusTag' for the generic
+-- bus-level @Fwd@, the type-enforcing tags for everything else.
 markerTagName :: (?nms :: ExternalNames) => SigMarker -> GHC.RdrName
 markerTagName = \case
+  FwdMarker      -> tagName ?nms
+  SignalMarker   -> signalTagName ?nms
+  DSignalMarker  -> dSignalTagName ?nms
   SignalVMarker  -> signalTagName ?nms
   FwdVMarker     -> fwdTagName ?nms
   DSignalVMarker -> dSignalTagName ?nms
-  SignalMarker   -> signalTagName ?nms
-  FwdMarker      -> fwdTagName ?nms
 
 tagTypeCon :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType GhcPs
 tagTypeCon =
@@ -1412,30 +1421,30 @@ transform debug = SYB.everywhereM (SYB.mkM transform') where
 
   -- `circuit $` application
   transform' (L _ (OpApp _xapp c@(L _ circuitVar) (L _ infixVar) appR))
-    | isDollar infixVar && dollarChainIsCircuit "circuit" circuitVar = do
+    | isDollar infixVar && dollarChainIsCircuit circuitVar = do
         runCircuitM $ do
           x <- parseCircuit appR >> completeUnderscores >> circuitQQExpM
           when debug $ ppr x
-          pure (dollarChainReplaceCircuit "circuit" x c)
+          pure (dollarChainReplaceCircuit x c)
 
   transform' e = pure e
 
--- | check if the named circuit keyword is applied via `a $ chain $ of $ dollars`.
-dollarChainIsCircuit :: GHC.FastString -> HsExpr GhcPs -> Bool
-dollarChainIsCircuit nm = \case
-  HsVar _ (L _ v)                             -> v == GHC.mkVarUnqual nm
-  OpApp _xapp _appL (L _ infixVar) (L _ appR) -> isDollar infixVar && dollarChainIsCircuit nm appR
+-- | check if circuit is applied via `a $ chain $ of $ dollars`.
+dollarChainIsCircuit :: HsExpr GhcPs -> Bool
+dollarChainIsCircuit = \case
+  HsVar _ (L _ v)                             -> v == GHC.mkVarUnqual "circuit"
+  OpApp _xapp _appL (L _ infixVar) (L _ appR) -> isDollar infixVar && dollarChainIsCircuit appR
   _                                           -> False
 
 -- | Replace the circuit if it's part of a chain of `$`.
-dollarChainReplaceCircuit :: GHC.FastString -> LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
-dollarChainReplaceCircuit nm circuitExpr (L loc app) = case app of
+dollarChainReplaceCircuit :: LHsExpr GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
+dollarChainReplaceCircuit circuitExpr (L loc app) = case app of
   HsVar _ (L _loc v)
-    -> if v == GHC.mkVarUnqual nm
+    -> if v == GHC.mkVarUnqual "circuit"
          then circuitExpr
          else error "dollarChainAddCircuit: not a circuit"
   OpApp xapp appL (L infixLoc infixVar) appR
-    -> L loc $ OpApp xapp appL (L infixLoc infixVar) (dollarChainReplaceCircuit nm circuitExpr appR)
+    -> L loc $ OpApp xapp appL (L infixLoc infixVar) (dollarChainReplaceCircuit circuitExpr appR)
   t -> error $ "dollarChainAddCircuit unhandled case " <> showC t
 
 -- | The plugin for circuit notation.
@@ -1496,6 +1505,7 @@ markerFromName :: OccName.OccName -> Maybe SigMarker
 markerFromName occ = case OccName.occNameString occ of
   "Signal"   -> Just SignalMarker
   "Fwd"      -> Just FwdMarker
+  "DSignal"  -> Just DSignalMarker
   "SignalV"  -> Just SignalVMarker
   "FwdV"     -> Just FwdVMarker
   "DSignalV" -> Just DSignalVMarker

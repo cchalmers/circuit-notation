@@ -61,6 +61,7 @@ main = do
     , check "daddC"    (sample5 (toSignal (simulateC daddC (dsig [1 ..], dsig [10, 20 ..]))))
                        [11, 22, 33, 44, 55]
     , check "dpipeC"   (sample5 (toSignal (simulateC dpipeC (dsig [1 ..])))) [0, 4, 6, 8, 10]
+    , check "dmapC"    (sample5 (toSignal (simulateC dmapC (dsig [0 ..]))))  [1, 2, 3, 4, 5]
     , check "plusOneFwd" (sample5 (simulateC plusOneFwd (fromList [0 ..]))) [1, 2, 3, 4, 5]
     , check "alwaysFive" (sample5 (simulateC alwaysFive ()))                [5, 5, 5, 5, 5]
     , check "addC"       (sample5 (simulateC addC (fromList [1 ..], fromList [10, 20 ..])))
@@ -83,8 +84,8 @@ main = do
     -- feedback
     , check "counter"          (sample5 (simulateC counter ()))                 [0, 1, 2, 3, 4]
     , check "accum"            (sample5 (simulateC accum (fromList [1 ..])))    [1, 3, 6, 10, 15]
-    , check "counter3"         (sample5 (simulateC counter3 (pure False)))      [10, 12, 14, 16, 18]
-    , check "counter3Expanded" (sample5 (simulateC counter3Expanded (pure False))) [10, 12, 14, 16, 18]
+    , check "counter3"         (sample5 (simulateC counter3 ()))         [10, 12, 14, 16, 18]
+    , check "counter3Expanded" (sample5 (simulateC counter3Expanded ())) [10, 12, 14, 16, 18]
     , check "fibC"             (sample5 (simulateC fibC ()))                    [0, 1, 1, 2, 3]
     , check "shift3"           (sample5 (simulateC shift3 (fromList [1 ..])))   [0, 0, 0, 1, 2]
     , check "rotate3"          (sample5 (simulateC rotate3 (pure 1)))           [6, 7, 8, 9, 10]
@@ -98,8 +99,8 @@ main = do
     -- different-domain property is the fact that the signatures compile)
     , let (dcA, dcB) = simulateC
             (dualCounter :: Circuit (Signal System Bool, Signal System Bool) (Signal System Int, Signal System Int))
-            (pure False, pure False)
-      in check "dualCounter" (sample5 dcA, sample5 dcB) ([1, 2, 3, 4, 5], [9, 10, 11, 12, 13])
+            (fromList (cycle [True, False]), pure True)
+      in check "dualCounter" (sample5 dcA, sample5 dcB) ([0, 1, 1, 2, 2], [0, 1, 2, 3, 4])
     , let (daA, daB) = simulateC
             (dualAccum :: Circuit (Signal System Int, Signal System Int) (Signal System Int, Signal System Int))
             (fromList [1 ..], fromList [10, 20 ..])

@@ -160,9 +160,9 @@ accum = circuit $ \(SignalV i) -> do
   idC -< SignalV acc'
 
 -- | Two interleaved feedback loops (the canonical example from the design
--- notes). The bus input is ignored.
-counter3 :: Circuit (Signal dom Bool) (Signal dom Int)
-counter3 = circuit \_bs -> do
+-- notes).
+counter3 :: Circuit () (Signal dom Int)
+counter3 = circuit do
   SignalV n <- registerC 0 -< SignalV n'
   SignalV m <- registerC 8 -< SignalV m'
   let n' = n + 1
@@ -175,8 +175,8 @@ counter3 = circuit \_bs -> do
 -- buses and a lazy let binding ties the feedback knot. 'SigTag' is 'BusTag'
 -- with its bus type pinned to a signal, which keeps inference going where
 -- the non-injective 'Fwd' family would otherwise lose it.
-counter3Expanded :: Circuit (Signal dom Bool) (Signal dom Int)
-counter3Expanded = TagCircuit $ \(_bs_Fwd :-> _) ->
+counter3Expanded :: Circuit () (Signal dom Int)
+counter3Expanded = TagCircuit $ \(~(BusTagBundle ()) :-> _) ->
   let
     circuitLogic = \(n, m) ->
       let n' = n + 1
@@ -188,9 +188,7 @@ counter3Expanded = TagCircuit $ \(_bs_Fwd :-> _) ->
 
     (_ :-> SigTag valIn0) = runTagCircuit (registerC 0) (SigTag valOut0 :-> BusTag unitBwd)
     (_ :-> SigTag valIn1) = runTagCircuit (registerC 8) (SigTag valOut1 :-> BusTag unitBwd)
-
-    _bs_Bwd = BusTag def
-  in (_bs_Bwd :-> SigTag valOut2)
+  in (BusTagBundle () :-> SigTag valOut2)
 
 -- | Compound state fed back through a /single/ register: a fibonacci
 -- machine. The pair is destructured and rebuilt at the value level.
@@ -273,6 +271,14 @@ dplusOne :: Circuit (DSignal dom d Int) (DSignal dom d Int)
 dplusOne = circuit \(DSignalV a) -> do
   idC -< DSignalV (a + 1)
 
+-- | The bus-level @DSignal@ marker: binds the raw delayed signal (here
+-- mapped over directly) while enforcing that the bus is a 'DSignal'. The
+-- bus-level @Signal@ marker enforces 'Signal' the same way; @Fwd@ remains
+-- the generic bus-level marker.
+dmapC :: Circuit (DSignal dom d Int) (DSignal dom d Int)
+dmapC = circuit \(DSignal s) -> do
+  idC -< DSignal (fmap (+ 1) s)
+
 -- | Two delayed values meeting in one group: their buses must agree on the
 -- delay (and domain), which the signature expresses with a single @d@.
 daddC :: Circuit (DSignal dom d Int, DSignal dom d Int) (DSignal dom d Int)
@@ -295,15 +301,13 @@ dpipeC = circuit \(DSignalV i) -> do
 -- value across domains is an (unsynchronized) clock domain crossing and is
 -- rejected by the type checker.
 
--- | Two completely independent counters in one block, on two /different/
+-- | Two independently enabled counters in one block, on two /different/
 -- clock domains: nothing forces @domA@ and @domB@ together.
 dualCounter :: Circuit (Signal domA Bool, Signal domB Bool) (Signal domA Int, Signal domB Int)
-dualCounter = circuit \(_ea, _eb) -> do
-  SignalV n <- registerC 0 -< SignalV n'
-  SignalV m <- registerC 8 -< SignalV m'
-  let n' = n + 1
-      m' = m + 1
-  idC -< (SignalV n', SignalV m')
+dualCounter = circuit \(SignalV enA, SignalV enB) -> do
+  SignalV n <- registerC 0 -< SignalV (if enA then n + 1 else n)
+  SignalV m <- registerC 0 -< SignalV (if enB then m + 1 else m)
+  idC -< (SignalV n, SignalV m)
 
 -- | Two independent accumulators, each reading values off its own input
 -- bus, on different clock domains.
