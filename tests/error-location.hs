@@ -55,6 +55,14 @@ fixtures =
     -- type error
   , Fixture ("tests" </> "fixtures" </> "CrossDomainError.hs") "cross-domain-error-marker"
       (Just "Couldn't match type")
+    -- sharing a value-level variable between two pipeline depths; the
+    -- merged group's delayed bundle demands one delay index
+  , Fixture ("tests" </> "fixtures" </> "CrossDelayError.hs") "cross-delay-error-marker"
+      (Just "Couldn't match type")
+    -- mixing plain and delayed value markers in one group is reported by
+    -- the plugin itself, at the offending marker
+  , Fixture ("tests" </> "fixtures" </> "MixedMarkerError.hs") "mixed-marker-error-marker"
+      (Just "mixes DSignalV with SignalV/FwdV")
   ]
 
 main :: IO ()

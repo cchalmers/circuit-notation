@@ -99,6 +99,7 @@ import GHC.Types.Unique.Map.Extra
 
 -- clash-prelude
 import Clash.Prelude (Vec((:>), Nil), bundle, unbundle)
+import qualified Clash.Signal.Delayed.Bundle as DBundle
 
 -- lens
 import qualified Control.Lens           as L
@@ -224,14 +225,25 @@ instance Show PortName where
 -- @SigTag@, which drives type inference) while @FwdV@ samples the forward
 -- channel of any signal-like bus (generating the class-constrained
 -- @FwdTag@, which requires the bus type to be determined by context).
-data SigMarker = SignalMarker | FwdMarker | SignalVMarker | FwdVMarker
+data SigMarker = SignalMarker | FwdMarker | SignalVMarker | FwdVMarker | DSignalVMarker
 
--- | Is this marker a value boundary (@SignalV@/@FwdV@)?
+-- | Is this marker a value boundary (@SignalV@/@FwdV@/@DSignalV@)?
 isValueMarker :: SigMarker -> Bool
 isValueMarker = \case
-  SignalVMarker -> True
-  FwdVMarker    -> True
-  _             -> False
+  SignalVMarker  -> True
+  FwdVMarker     -> True
+  DSignalVMarker -> True
+  _              -> False
+
+-- | Value groups come in two flavors, lifted with the matching bundle:
+-- plain signal values (@SignalV@/@FwdV@) and delayed signal values
+-- (@DSignalV@). The flavors cannot meet in one group.
+data GroupFlavor = SignalGroup | DSignalGroup deriving Eq
+
+valueMarkerFlavor :: SigMarker -> GroupFlavor
+valueMarkerFlavor = \case
+  DSignalVMarker -> DSignalGroup
+  _              -> SignalGroup
 
 data PortDescription a
     = Tuple [PortDescription a]
@@ -935,10 +947,11 @@ sigTagE mk a@(L l _) = varE l (markerTagName mk) `appE` a
 -- only value markers reach the SigTag* constructors, but keep this total
 markerTagName :: (?nms :: ExternalNames) => SigMarker -> GHC.RdrName
 markerTagName = \case
-  SignalVMarker -> signalTagName ?nms
-  FwdVMarker    -> fwdTagName ?nms
-  SignalMarker  -> signalTagName ?nms
-  FwdMarker     -> fwdTagName ?nms
+  SignalVMarker  -> signalTagName ?nms
+  FwdVMarker     -> fwdTagName ?nms
+  DSignalVMarker -> dSignalTagName ?nms
+  SignalMarker   -> signalTagName ?nms
+  FwdMarker      -> fwdTagName ?nms
 
 tagTypeCon :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType GhcPs
 tagTypeCon =
@@ -1071,11 +1084,11 @@ countValuePorts p =
 replaceFwdPats
   :: String
   -> PortDescription PortName
-  -> State (Int, [LPat GhcPs]) (PortDescription PortName)
+  -> State (Int, [(SigMarker, LPat GhcPs)]) (PortDescription PortName)
 replaceFwdPats prefix = L.transformM \case
   FwdPat mk lpat@(L loc _) | isValueMarker mk -> do
     (i, pats) <- get
-    put (i + 1, pats <> [lpat])
+    put (i + 1, pats <> [(mk, lpat)])
     pure (SigTagPat mk (varP loc (prefix <> show i)))
   p -> pure p
 
@@ -1085,11 +1098,11 @@ replaceFwdPats prefix = L.transformM \case
 replaceFwdExprs
   :: String
   -> PortDescription PortName
-  -> State (Int, [LHsExpr GhcPs]) (PortDescription PortName)
+  -> State (Int, [(SigMarker, LHsExpr GhcPs)]) (PortDescription PortName)
 replaceFwdExprs prefix = L.transformM \case
   FwdExpr mk lexpr@(L loc _) | isValueMarker mk -> do
     (i, exprs) <- get
-    put (i + 1, exprs <> [lexpr])
+    put (i + 1, exprs <> [(mk, lexpr)])
     pure (SigTagExpr mk (varE loc (var (prefix <> show i))))
   p -> pure p
 
@@ -1175,13 +1188,13 @@ valueCircuitQQExpM = do
   letTypes <- L.use circuitTypes
 
   -- see [value-components]
-  let valueNames = Set.fromList (concatMap patVarNames inPats <> concatMap bindDefinedNames lets)
+  let valueNames = Set.fromList (concatMap (patVarNames . snd) inPats <> concatMap bindDefinedNames lets)
       valueFvs :: SYB.Data a => a -> Set.Set String
       valueFvs a = Set.intersection (freeVarNames a) valueNames
 
       items =
-        [ (ItemIn i, Set.fromList (patVarNames p)) | (i, p) <- zip [0 ..] inPats ] <>
-        [ (ItemOut k, valueFvs e) | (k, e) <- zip [0 ..] outExprs ] <>
+        [ (ItemIn i, Set.fromList (patVarNames p)) | (i, (_, p)) <- zip [0 ..] inPats ] <>
+        [ (ItemOut k, valueFvs e) | (k, (_, e)) <- zip [0 ..] outExprs ] <>
         [ (ItemLet j, Set.fromList (bindDefinedNames b) `Set.union` valueFvs b)
         | (j, b) <- zip [0 ..] lets ]
 
@@ -1214,41 +1227,63 @@ valueCircuitQQExpM = do
       sigsForComp ci = [ s | (Just ci', s) <- splitSigs, ci' == ci ]
       outerSigs = [ s | (Nothing, s) <- splitSigs ]
 
+  -- Each group is lifted with the bundle matching its markers' flavor;
+  -- plain (SignalV/FwdV) and delayed (DSignalV) values cannot meet in one
+  -- group, since neither bundle accepts both bus kinds.
+  flavors <- forM innerGroups \(its, _) -> do
+    let mks = [ (fst (inPats !! i), getLoc (snd (inPats !! i))) | ItemIn i <- its ]
+           <> [ (fst (outExprs !! k), getLoc (snd (outExprs !! k))) | ItemOut k <- its ]
+        dLocs = [ l | (mk, l) <- mks, valueMarkerFlavor mk == DSignalGroup ]
+        sLocs = [ l | (mk, l) <- mks, valueMarkerFlavor mk == SignalGroup ]
+    case (dLocs, sLocs) of
+      (dl : _, _ : _) -> do
+        errM (locA dl) $
+          "This value group mixes DSignalV with SignalV/FwdV markers. "
+          <> "Delayed and undelayed values cannot meet in one logic group; "
+          <> "convert between Signal and DSignal explicitly at the bus level "
+          <> "instead."
+        pure DSignalGroup
+      (_ : _, []) -> pure DSignalGroup
+      _           -> pure SignalGroup
+
       -- One logic function and one lifted knot binding per group:
       --   circuitLogic_cN = \(ins) -> let <lets> in (outs)
       --   (outBuses) = unbundle (fmap circuitLogic_cN (bundle (inBuses)))
       -- bundle/unbundle are only needed when there is more than one bus, and
       -- with no inputs at all the logic is constant, so it is mapped over
       -- @pure ()@. The generated bundle elements and knot patterns take the
-      -- source locations of the original Signal markers, so clock domain
-      -- mismatches are reported on the offending marker. Groups with no
-      -- outputs produce no value (their logic would be dead) and generate
+      -- source locations of the original markers, so clock domain (and
+      -- delay) mismatches are reported on the offending marker. Groups with
+      -- no outputs produce no value (their logic would be dead) and generate
       -- nothing.
-      mkComp ci (its, _) =
+  let mkComp ci flavor (its, _) =
         let ins  = sort [ i | ItemIn i <- its ]
             outs = sort [ k | ItemOut k <- its ]
             ls   = sort [ j | ItemLet j <- its ]
+            (bundleNm, unbundleNm) = case flavor of
+              SignalGroup  -> (thName 'bundle, thName 'unbundle)
+              DSignalGroup -> (thName 'DBundle.bundle, thName 'DBundle.unbundle)
             logicNm = logicName <> "_c" <> show ci
-            logicLam = lamE [tupP (map (inPats !!) ins)]
+            logicLam = lamE [tupP (map (snd . (inPats !!)) ins)]
               (letE noSrcSpanA (sigsForComp ci) (map (lets !!) ls)
-                    (tupE noSrcSpanA (map (outExprs !!) outs)))
+                    (tupE noSrcSpanA (map (snd . (outExprs !!)) outs)))
             logicBind = L loc $ patBind (varP noSrcSpanA logicNm) logicLam
 
-            inVars = map (\i -> let (L l _) = inPats !! i in varE l (var (inPrefix <> show i))) ins
-            outVarPs = map (\k -> let (L l _) = outExprs !! k in varP l (outPrefix <> show k)) outs
+            inVars = map (\i -> let (L l _) = snd (inPats !! i) in varE l (var (inPrefix <> show i))) ins
+            outVarPs = map (\k -> let (L l _) = snd (outExprs !! k) in varP l (outPrefix <> show k)) outs
 
             bundled = case inVars of
               []  -> varE noSrcSpanA (thName 'pure) `appE` tupE noSrcSpanA []
               [e] -> e
-              es  -> varE noSrcSpanA (thName 'bundle) `appE` tupE noSrcSpanA es
+              es  -> varE noSrcSpanA bundleNm `appE` tupE noSrcSpanA es
             lifted = varE noSrcSpanA (thName 'fmap) `appE` varE noSrcSpanA (var logicNm) `appE` bundled
             knotExpr = if length outs > 1
-              then varE noSrcSpanA (thName 'unbundle) `appE` lifted
+              then varE noSrcSpanA unbundleNm `appE` lifted
               else lifted
             knotBind = L loc $ patBind (tupP outVarPs) knotExpr
         in if null outs then [] else [logicBind, knotBind]
 
-      compDecs = concat (zipWith mkComp [0 ..] innerGroups)
+      compDecs = concat (zipWith3 mkComp [0 ..] flavors innerGroups)
 
   -- The bus plumbing is generated exactly as in 'busCircuitQQExpM'.
   let decFromBinding' b@Binding{bCircuit = L cloc _} = L cloc (decFromBinding dflags b)
@@ -1459,11 +1494,12 @@ showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
 -- | Recognise the port marker keywords (see 'SigMarker').
 markerFromName :: OccName.OccName -> Maybe SigMarker
 markerFromName occ = case OccName.occNameString occ of
-  "Signal"  -> Just SignalMarker
-  "Fwd"     -> Just FwdMarker
-  "SignalV" -> Just SignalVMarker
-  "FwdV"    -> Just FwdVMarker
-  _         -> Nothing
+  "Signal"   -> Just SignalMarker
+  "Fwd"      -> Just FwdMarker
+  "SignalV"  -> Just SignalVMarker
+  "FwdV"     -> Just FwdVMarker
+  "DSignalV" -> Just DSignalVMarker
+  _          -> Nothing
 
 -- | Collection of names external to circuit-notation.
 data ExternalNames = ExternalNames
@@ -1477,7 +1513,9 @@ data ExternalNames = ExternalNames
   -- blocks
   , fwdTagName :: GHC.RdrName
   -- ^ like 'signalTagName' but class-constrained, accepting any signal-like
-  -- bus; used for @Fwd@ markers at the value boundary of @circuitV@ blocks
+  -- bus; used for @FwdV@ markers at the value boundary of @circuit@ blocks
+  , dSignalTagName :: GHC.RdrName
+  -- ^ like 'signalTagName' for delayed signals; used for @DSignalV@ markers
   , tagTName :: GHC.RdrName
   , fwdBwdCon :: GHC.RdrName
   , fwdAndBwdTypes :: Direction -> GHC.RdrName
@@ -1498,6 +1536,7 @@ defExternalNames = ExternalNames
   , tagName = GHC.Unqual (OccName.mkDataOcc "BusTag")
   , signalTagName = GHC.Unqual (OccName.mkDataOcc "SigTag")
   , fwdTagName = GHC.Unqual (OccName.mkDataOcc "FwdTag")
+  , dSignalTagName = GHC.Unqual (OccName.mkDataOcc "DSigTag")
   , tagTName = GHC.Unqual (OccName.mkTcOcc "BusTag")
   , fwdBwdCon = GHC.Unqual (OccName.mkDataOcc ":->")
   , fwdAndBwdTypes = \case

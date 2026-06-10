@@ -17,21 +17,25 @@
   rejected by the type checker. Lets that don't touch value land stay at
   the bus level, so let-bound sub-circuits can be used with `-<`.
 
-  The two value markers have distinct semantics: `SignalV x` asserts the
+  The value markers have distinct semantics: `SignalV x` asserts the
   bus is a `Signal` (best inference — it works against fully generic
-  sub-circuits), while `FwdV x` samples/drives the forward channel of any
+  sub-circuits); `FwdV x` samples/drives the forward channel of any
   signal-like bus via the new `SignalBus` class (`Signal`s, `Vec`s and
   tuples of them, custom buses) but needs the bus type determined by
-  context.
+  context; and `DSignalV x` is `SignalV` for delayed signals — the delay
+  index is part of the bus type, so a logic group's values must all sit at
+  the same pipeline depth, and its outputs are produced at that depth.
+  Mixing plain and delayed markers in one group is reported by the plugin.
 
-  The value boundary is generated with the new `SigTag` and `FwdTag` pattern
-  synonyms (`Circuit` module); `SigTag` pins the bus type to a `Signal` so
-  that type inference survives nested circuits (the `Fwd` family is not
-  injective) and "too shallow" `SignalV` markers report a direct
-  `Vec`-vs-`Signal` style mismatch. **Breaking**: `ExternalNames` gained
-  `signalTagName` and `fwdTagName` fields, so custom plugins (e.g.
-  clash-protocols style) need to supply them — `defExternalNames` is now
-  exported so they can be record updates of the defaults.
+  The value boundary is generated with the new `SigTag`, `FwdTag` and
+  `DSigTag` pattern synonyms (`Circuit` module); `SigTag`/`DSigTag` pin the
+  bus type so that type inference survives nested circuits (the `Fwd`
+  family is not injective) and "too shallow" `SignalV` markers report a
+  direct `Vec`-vs-`Signal` style mismatch. **Breaking**: `ExternalNames`
+  gained `signalTagName`, `fwdTagName` and `dSignalTagName` fields, so
+  custom plugins (e.g. clash-protocols style) need to supply them —
+  `defExternalNames` is now exported so they can be record updates of the
+  defaults.
 * Add a per-GHC `checks` output to the flake, so `nix flake check` (or
   `nix build .#checks.<system>.<ghc>`) builds the package and runs all test
   suites against every supported GHC. The CI nix job now uses it. The

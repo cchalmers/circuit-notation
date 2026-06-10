@@ -77,6 +77,9 @@ type instance Bwd (a,b,c) = (Bwd a, Bwd b, Bwd c)
 type instance Fwd (Signal dom a) = Signal dom a
 type instance Bwd (Signal dom a) = ()
 
+type instance Fwd (DSignal dom d a) = DSignal dom d a
+type instance Bwd (DSignal dom d a) = ()
+
 -- | Circuit type.
 newtype Circuit a b = Circuit { runCircuit :: CircuitT a b }
 type CircuitT a b = (Fwd a :-> Bwd b) -> (Bwd a :-> Fwd b)
@@ -217,6 +220,17 @@ pattern BusTagBundle a <- (taggedUnbundle -> a) where
 pattern SigTag :: Signal dom a -> BusTag (Signal dom a) (Signal dom a)
 pattern SigTag s = BusTag s
 {-# COMPLETE SigTag #-}
+
+-- | Like 'SigTag' but for delayed signals, used for @DSignalV@ markers:
+-- pins the bus type to be a 'DSignal', /including its delay index/. The
+-- markers of one logic group all flow through one (delayed) bundle, so a
+-- group's buses must agree on the delay as well as the domain — combining
+-- values from different pipeline stages is rejected by the type checker.
+-- Since the lifted logic is combinational, the group's outputs are produced
+-- at the same delay its inputs are sampled at.
+pattern DSigTag :: DSignal dom d a -> BusTag (DSignal dom d a) (DSignal dom d a)
+pattern DSigTag s = BusTag s
+{-# COMPLETE DSigTag #-}
 
 -- | Buses whose forward channel carries a single value per clock cycle,
 -- i.e. is convertible to a single 'Signal'. The @Fwd@ markers at the value

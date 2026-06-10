@@ -27,6 +27,13 @@ The two value markers differ in what buses they accept:
   given a one-line instance. In exchange, the bus type must be determined by
   context (the circuit's signature or a concretely typed sub-circuit), and
   pattern uses need a trivial backwards channel (`TrivialBwd (Bwd t)`).
+- `DSignalV x` is `SignalV` for delayed signals (`DSignal dom d a`). The
+  delay index is part of the bus type, so everything in one logic group must
+  sit at the *same pipeline depth* (combining values from different stages
+  is a type error, like mixing clock domains), and since the lifted logic is
+  combinational, a group's outputs are produced at the delay its inputs are
+  sampled at. Groups at different depths can coexist in one block. Plain and
+  delayed values can't meet in one group; the plugin reports mixing them.
 
 Everything in between — the `let` bindings of the do block — is ordinary pure
 Haskell, and feedback loops are written as ordinary recursive `let`s:

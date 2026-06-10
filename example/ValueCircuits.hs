@@ -17,6 +17,7 @@ blocks. These are simulated and checked by tests/unittests.hs.
 {-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
+{-# LANGUAGE TypeOperators       #-}
 
 {-# OPTIONS -fplugin=CircuitNotation #-}
 {-# OPTIONS -Wall #-}
@@ -250,6 +251,41 @@ multicastC = circuit \(SignalV a) -> do
 -- | Without any value-level markers this is just ordinary circuit notation.
 passthrough :: Circuit (Signal dom Int) (Signal dom Int)
 passthrough = circuit \a -> a
+
+-- Delayed signals --------------------------------------------------------
+--
+-- @DSignalV@ marks the value boundary on 'DSignal' buses. The generated
+-- @DSigTag@ pins the bus type /including the delay index/, and a delayed
+-- group's bundle unifies the delays of everything in it: all values that
+-- meet must come from (and go to) buses at the same pipeline depth. The
+-- lifted logic is combinational, so a group's outputs are produced at the
+-- same delay its inputs are sampled at. Groups at different delays can
+-- coexist in one block.
+
+-- | A delayed register: the output is one cycle (and one delay index)
+-- behind the input.
+dregisterC :: a -> Circuit (DSignal dom d a) (DSignal dom (d + 1) a)
+dregisterC a = Circuit $ \(s :-> ()) -> (() :-> unsafeFromSignal (a :- toSignal s))
+
+-- | Delay-polymorphic pass-through: works at any pipeline depth, and pins
+-- input and output to the /same/ depth.
+dplusOne :: Circuit (DSignal dom d Int) (DSignal dom d Int)
+dplusOne = circuit \(DSignalV a) -> do
+  idC -< DSignalV (a + 1)
+
+-- | Two delayed values meeting in one group: their buses must agree on the
+-- delay (and domain), which the signature expresses with a single @d@.
+daddC :: Circuit (DSignal dom d Int, DSignal dom d Int) (DSignal dom d Int)
+daddC = circuit \(DSignalV a, DSignalV b) -> do
+  idC -< DSignalV (a + b)
+
+-- | A two-stage pipeline: the @i@ group sits at delay @d@ and the @a@ group
+-- at delay @d + 1@ -- two value groups at different pipeline depths in one
+-- block, linked by the delayed register at the bus level.
+dpipeC :: Circuit (DSignal dom d Int) (DSignal dom (d + 1) Int)
+dpipeC = circuit \(DSignalV i) -> do
+  DSignalV a <- dregisterC 0 -< DSignalV (i + 1)
+  idC -< DSignalV (a * 2)
 
 -- Multiple clock domains -------------------------------------------------
 --

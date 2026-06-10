@@ -9,8 +9,9 @@ module Main where
 import           Control.Monad (unless)
 import           System.Exit   (exitFailure)
 
-import           Clash.Prelude (NFDataX, Signal, System, Vec ((:>), Nil),
-                                fromList, sampleN)
+import           Clash.Prelude (DSignal, NFDataX, Signal, System,
+                                Vec ((:>), Nil), fromList, fromSignal,
+                                sampleN, toSignal)
 
 import           Circuit       (Circuit)
 import           Example       ()
@@ -20,6 +21,9 @@ import           ValueCircuits
 -- argument, which only subsumes under DeepSubsumption
 sample5 :: NFDataX a => Signal System a -> [a]
 sample5 s = sampleN 5 s
+
+dsig :: NFDataX a => [a] -> DSignal System 0 a
+dsig = fromSignal . fromList
 
 check :: (Eq a, Show a) => String -> a -> a -> IO Bool
 check name actual expected
@@ -51,6 +55,12 @@ main = do
     , let (mlV, mlA) = simulateC mixedLevelsC (fromList [1 ..] :> fromList [10, 20 ..] :> Nil, fromList [0 ..])
       in check "mixedLevelsC" (fmap sample5 mlV, sample5 mlA)
                               ([10, 20, 30, 40, 50] :> [1, 2, 3, 4, 5] :> Nil, [1, 2, 3, 4, 5])
+
+    -- delayed signals
+    , check "dplusOne" (sample5 (toSignal (simulateC dplusOne (dsig [0 ..]))))  [1, 2, 3, 4, 5]
+    , check "daddC"    (sample5 (toSignal (simulateC daddC (dsig [1 ..], dsig [10, 20 ..]))))
+                       [11, 22, 33, 44, 55]
+    , check "dpipeC"   (sample5 (toSignal (simulateC dpipeC (dsig [1 ..])))) [0, 4, 6, 8, 10]
     , check "plusOneFwd" (sample5 (simulateC plusOneFwd (fromList [0 ..]))) [1, 2, 3, 4, 5]
     , check "alwaysFive" (sample5 (simulateC alwaysFive ()))                [5, 5, 5, 5, 5]
     , check "addC"       (sample5 (simulateC addC (fromList [1 ..], fromList [10, 20 ..])))
