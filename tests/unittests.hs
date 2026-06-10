@@ -15,8 +15,10 @@ import           Clash.Prelude (NFDataX, Signal, System, Vec ((:>), Nil),
 import           Example       ()
 import           ValueCircuits
 
+-- eta-expanded because Clash's sampleN takes a @HiddenClockResetEnable dom =>@
+-- argument, which only subsumes under DeepSubsumption
 sample5 :: NFDataX a => Signal System a -> [a]
-sample5 = sampleN 5
+sample5 s = sampleN 5 s
 
 check :: (Eq a, Show a) => String -> a -> a -> IO Bool
 check name actual expected
