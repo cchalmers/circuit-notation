@@ -78,7 +78,9 @@ mixedMarkersC = circuitV \(Signal a, Fwd v) -> do
 -- | A custom signal-like bus: a stream of optionally-valid values with no
 -- backpressure. The 'SignalBus' instance is all that's needed for @Fwd@
 -- markers to sample and drive it in @circuitV@ blocks.
-data VStream (dom :: Domain) a
+-- the explicit result kind matters: without it, PolyKinds (on by default in
+-- GHC2021+) would infer a poly-kinded @a@ for this empty data declaration
+data VStream (dom :: Domain) (a :: Type)
 type instance Fwd (VStream dom a) = Signal dom (Maybe a)
 type instance Bwd (VStream dom a) = ()
 
