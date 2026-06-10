@@ -209,7 +209,7 @@ pattern BusTagBundle a <- (taggedUnbundle -> a) where
 {-# COMPLETE BusTagBundle #-}
 
 -- | A tagged 'Signal' bus. Used by the plugin for @Signal@ markers at the
--- value boundary of 'circuitV' blocks: matching or constructing with
+-- value boundary of circuit blocks: matching or constructing with
 -- 'SigTag' pins the bus type itself (the tag) to be a 'Signal', which
 -- drives type inference. Since 'Fwd' is not injective, plain 'BusTag' would
 -- leave the bus type ambiguous and type inference for nested circuits would
@@ -220,7 +220,7 @@ pattern SigTag s = BusTag s
 
 -- | Buses whose forward channel carries a single value per clock cycle,
 -- i.e. is convertible to a single 'Signal'. The @Fwd@ markers at the value
--- boundary of @circuitV@ blocks work on any such bus: 'Signal's themselves,
+-- boundary of @circuit@ blocks work on any such bus: 'Signal's themselves,
 -- 'Vec's and tuples of signal-like buses (all in the same domain), and any
 -- custom bus given an instance.
 class SignalBus t where
@@ -270,7 +270,7 @@ instance (SignalBus a, SignalBus b, SignalBus c, BusDom a ~ BusDom b, BusDom b ~
       , unBusTag (sigToBus sc :: BusTag c (Fwd c)) )
 
 -- | Like 'SigTag' but for any signal-like bus. Used by the plugin for @Fwd@
--- markers at the value boundary of @circuitV@ blocks. Unlike 'SigTag' it
+-- markers at the value boundary of @circuit@ blocks. Unlike 'SigTag' it
 -- cannot drive type inference (several buses can share a forward type), so
 -- the bus type has to be determined by context, e.g. the circuit's
 -- signature or a concretely typed sub-circuit.

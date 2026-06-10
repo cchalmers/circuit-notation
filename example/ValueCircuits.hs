@@ -7,8 +7,8 @@
  ╚═════╝╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝   ╚═╝   ╚══════╝
   (C) 2020, Christopher Chalmers
 
-Examples of value-level circuits (the 'circuitV' keyword). These are
-simulated and checked by tests/unittests.hs.
+Examples of value-level ports (the 'SignalV' and 'FwdV' markers) in circuit
+blocks. These are simulated and checked by tests/unittests.hs.
 -}
 
 {-# LANGUAGE BlockArguments      #-}
@@ -44,42 +44,42 @@ simulateC c aFwd = let (_ :-> bFwd) = runCircuit c (aFwd :-> unitBwd) in bFwd
 -- feedback. @a@ is the per-cycle 'Int' carried on the bus, not the bus
 -- itself; no @bundle@/@unbundle@ is generated for single buses.
 plusOne :: Circuit (Signal dom Int) (Signal dom Int)
-plusOne = circuitV \(Signal a) -> do
-  idC -< Signal (a + 1)
+plusOne = circuit \(SignalV a) -> do
+  idC -< SignalV (a + 1)
 
 -- | The same as 'plusOne' without a do block: a bare expression body.
 plusOneBare :: Circuit (Signal dom Int) (Signal dom Int)
-plusOneBare = circuitV \(Signal a) -> Signal (a + 1)
+plusOneBare = circuit \(SignalV a) -> SignalV (a + 1)
 
--- | The @Fwd@ keyword also marks the value boundary, but works on /any/
+-- | The @FwdV@ marker also marks the value boundary, but works on /any/
 -- signal-like bus (any 'SignalBus' instance) rather than only literal
 -- 'Signal's. The trade-off: the bus type must be determined by context
 -- (here, the signature).
 plusOneFwd :: Circuit (Signal dom Int) (Signal dom Int)
-plusOneFwd = circuitV \(Fwd a) -> do
-  idC -< Fwd (a + 1)
+plusOneFwd = circuit \(FwdV a) -> do
+  idC -< FwdV (a + 1)
 
 -- | A whole 'Vec' of signal buses sampled as a single @Vec n Int@ value per
 -- cycle (via the 'SignalBus' instance for 'Vec').
 vecSampleC :: Circuit (Vec 2 (Signal dom Int)) (Signal dom Int)
-vecSampleC = circuitV \(Fwd v) -> do
-  idC -< Signal (sum v)
+vecSampleC = circuit \(FwdV v) -> do
+  idC -< SignalV (sum v)
 
 -- | ... and emitted back as one: a @Vec 2 Int@ value drives both buses.
 vecEmitC :: Circuit (Signal dom Int) (Vec 2 (Signal dom Int))
-vecEmitC = circuitV \(Signal a) -> do
-  idC -< Fwd (a :> (a + 1) :> Nil)
+vecEmitC = circuit \(SignalV a) -> do
+  idC -< FwdV (a :> (a + 1) :> Nil)
 
--- | @Signal@ and @Fwd@ markers can meet in the same logic group.
+-- | @SignalV@ and @FwdV@ markers can meet in the same logic group.
 mixedMarkersC :: Circuit (Signal dom Int, Vec 2 (Signal dom Int)) (Signal dom Int)
-mixedMarkersC = circuitV \(Signal a, Fwd v) -> do
-  idC -< Signal (a + sum v)
+mixedMarkersC = circuit \(SignalV a, FwdV v) -> do
+  idC -< SignalV (a + sum v)
 
 -- | A custom signal-like bus: a stream of optionally-valid values with no
--- backpressure. The 'SignalBus' instance is all that's needed for @Fwd@
--- markers to sample and drive it in @circuitV@ blocks.
--- the explicit result kind matters: without it, PolyKinds (on by default in
--- GHC2021+) would infer a poly-kinded @a@ for this empty data declaration
+-- backpressure. The 'SignalBus' instance is all that's needed for @FwdV@
+-- markers to sample and drive it in circuit blocks.
+-- The explicit result kind matters: without it, PolyKinds (on by default in
+-- GHC2021+) would infer a poly-kinded @a@ for this empty data declaration.
 data VStream (dom :: Domain) (a :: Type)
 type instance Fwd (VStream dom a) = Signal dom (Maybe a)
 type instance Bwd (VStream dom a) = ()
@@ -91,53 +91,53 @@ instance SignalBus (VStream dom a) where
   sigToBus = BusTag
 
 vstreamC :: Circuit (VStream dom Int) (VStream dom Int)
-vstreamC = circuitV \(Fwd m) -> do
-  idC -< Fwd (fmap (+ 1) m)
+vstreamC = circuit \(FwdV m) -> do
+  idC -< FwdV (fmap (+ 1) m)
 
 -- | No value inputs at all: the logic is constant.
 alwaysFive :: Circuit () (Signal dom Int)
-alwaysFive = circuitV do
-  idC -< Signal (5 :: Int)
+alwaysFive = circuit do
+  idC -< SignalV (5 :: Int)
 
 -- | Two value inputs, one value output (a single @bundle@, no @unbundle@).
 addC :: Circuit (Signal dom Int, Signal dom Int) (Signal dom Int)
-addC = circuitV \(Signal a, Signal b) -> do
-  idC -< Signal (a + b)
+addC = circuit \(SignalV a, SignalV b) -> do
+  idC -< SignalV (a + b)
 
 -- | One value input, two value outputs (a single @unbundle@, no @bundle@).
 fanOutC :: Circuit (Signal dom Int) (Signal dom Int, Signal dom Int)
-fanOutC = circuitV \(Signal a) -> do
-  idC -< (Signal (a + 1), Signal (a * 2))
+fanOutC = circuit \(SignalV a) -> do
+  idC -< (SignalV (a + 1), SignalV (a * 2))
 
 -- | Values can be matched out of a bus carrying a compound type ...
 splitC :: Circuit (Signal dom (Int, Bool)) (Signal dom Int, Signal dom Bool)
-splitC = circuitV \(Signal (a, b)) -> do
-  idC -< (Signal a, Signal b)
+splitC = circuit \(SignalV (a, b)) -> do
+  idC -< (SignalV a, SignalV b)
 
 -- | ... and combined back onto one.
 joinC :: Circuit (Signal dom Int, Signal dom Bool) (Signal dom (Int, Bool))
-joinC = circuitV \(Signal a, Signal b) -> do
-  idC -< Signal (a, b)
+joinC = circuit \(SignalV a, SignalV b) -> do
+  idC -< SignalV (a, b)
 
 -- | Ports nest like in ordinary circuit notation.
 nestedTupleC :: Circuit ((Signal dom Int, Signal dom Int), Signal dom Int) (Signal dom Int)
-nestedTupleC = circuitV \((Signal a, Signal b), Signal c) -> do
-  idC -< Signal (a + b * c)
+nestedTupleC = circuit \((SignalV a, SignalV b), SignalV c) -> do
+  idC -< SignalV (a + b * c)
 
 -- | Value boundaries inside 'Vec' buses.
 vecInC :: Circuit (Vec 2 (Signal dom Int)) (Signal dom Int)
-vecInC = circuitV \[Signal a, Signal b] -> do
-  idC -< Signal (a - b)
+vecInC = circuit \[SignalV a, SignalV b] -> do
+  idC -< SignalV (a - b)
 
 vecOutC :: Circuit (Signal dom Int) (Vec 2 (Signal dom Int))
-vecOutC = circuitV \(Signal a) -> do
-  idC -< [Signal (a + 1), Signal (a - 1)]
+vecOutC = circuit \(SignalV a) -> do
+  idC -< [SignalV (a + 1), SignalV (a - 1)]
 
 -- | Ports crossing the value boundary can be given bus-level type
 -- annotations like any other port.
 annotatedC :: forall dom. Circuit (Signal dom Int) (Signal dom Int)
-annotatedC = circuitV \((Signal a) :: Signal dom Int) -> do
-  idC -< Signal (a + 1)
+annotatedC = circuit \((SignalV a) :: Signal dom Int) -> do
+  idC -< SignalV (a + 1)
 
 -- Feedback -------------------------------------------------------------
 
@@ -145,28 +145,28 @@ annotatedC = circuitV \((Signal a) :: Signal dom Int) -> do
 -- @n'@ is defined in terms of its output @n@ by an ordinary recursive @let@;
 -- the plugin ties the knot at the signal level.
 counter :: Circuit () (Signal dom Int)
-counter = circuitV do
-  Signal n <- registerC 0 -< Signal n'
+counter = circuit do
+  SignalV n <- registerC 0 -< SignalV n'
   let n' = n + 1
-  idC -< Signal n
+  idC -< SignalV n
 
 -- | A Mealy-style accumulator: reads the per-cycle value off the input bus
 -- and feeds back state through a register. Written with a @$@ chain.
 accum :: Circuit (Signal dom Int) (Signal dom Int)
-accum = circuitV $ \(Signal i) -> do
-  Signal acc <- registerC 0 -< Signal acc'
+accum = circuit $ \(SignalV i) -> do
+  SignalV acc <- registerC 0 -< SignalV acc'
   let acc' = acc + i
-  idC -< Signal acc'
+  idC -< SignalV acc'
 
 -- | Two interleaved feedback loops (the canonical example from the design
 -- notes). The bus input is ignored.
 counter3 :: Circuit (Signal dom Bool) (Signal dom Int)
-counter3 = circuitV \_bs -> do
-  Signal n <- registerC 0 -< Signal n'
-  Signal m <- registerC 8 -< Signal m'
+counter3 = circuit \_bs -> do
+  SignalV n <- registerC 0 -< SignalV n'
+  SignalV m <- registerC 8 -< SignalV m'
   let n' = n + 1
       m' = m + 1
-  idC -< Signal (n' + m')
+  idC -< SignalV (n' + m')
 
 -- | What 'counter3' expands to (modulo generated names). The value-level
 -- bindings are collected into one pure function, @circuitLogic@, which is
@@ -194,55 +194,62 @@ counter3Expanded = TagCircuit $ \(_bs_Fwd :-> _) ->
 -- | Compound state fed back through a /single/ register: a fibonacci
 -- machine. The pair is destructured and rebuilt at the value level.
 fibC :: Circuit () (Signal dom Int)
-fibC = circuitV do
-  Signal (a, b) <- registerC (0, 1) -< Signal (b, a + b)
-  idC -< Signal a
+fibC = circuit do
+  SignalV (a, b) <- registerC (0, 1) -< SignalV (b, a + b)
+  idC -< SignalV a
 
 -- | A chain of registers: a three-deep shift register (no feedback, but a
 -- value passes through several binds).
 shift3 :: Circuit (Signal dom Int) (Signal dom Int)
-shift3 = circuitV \(Signal i) -> do
-  Signal a <- registerC 0 -< Signal i
-  Signal b <- registerC 0 -< Signal a
-  Signal c <- registerC 0 -< Signal b
-  idC -< Signal c
+shift3 = circuit \(SignalV i) -> do
+  SignalV a <- registerC 0 -< SignalV i
+  SignalV b <- registerC 0 -< SignalV a
+  SignalV c <- registerC 0 -< SignalV b
+  idC -< SignalV c
 
 -- | Three rotating registers plus the bus input: a four-way bundle on both
 -- sides of the logic function.
 rotate3 :: Circuit (Signal dom Int) (Signal dom Int)
-rotate3 = circuitV \(Signal i) -> do
-  Signal a <- registerC 1 -< Signal a'
-  Signal b <- registerC 2 -< Signal b'
-  Signal c <- registerC 3 -< Signal c'
+rotate3 = circuit \(SignalV i) -> do
+  SignalV a <- registerC 1 -< SignalV a'
+  SignalV b <- registerC 2 -< SignalV b'
+  SignalV c <- registerC 3 -< SignalV c'
   let a' = b
       b' = c
       c' = a + i
-  idC -< Signal (a + b + c)
+  idC -< SignalV (a + b + c)
 
 -- Mixing value land and bus land ----------------------------------------
 
 -- | Value-level and bus-level ports can be mixed: the second bus is routed
 -- through untouched while the first is sampled and modified.
 mixedC :: Circuit (Signal dom Int, Signal dom Int) (Signal dom Int, Signal dom Int)
-mixedC = circuitV \(Signal a, b) -> do
-  idC -< (Signal (a + 1), b)
+mixedC = circuit \(SignalV a, b) -> do
+  idC -< (SignalV (a + 1), b)
 
 -- | As 'mixedC' but with a 'DF' bus (whose backwards channel is not
 -- trivial) routed through.
 mixedDfC :: Circuit (Signal dom Int, DF dom Bool) (Signal dom Int, DF dom Bool)
-mixedDfC = circuitV \(Signal a, df) -> do
-  idC -< (Signal (a + 1), df)
+mixedDfC = circuit \(SignalV a, df) -> do
+  idC -< (SignalV (a + 1), df)
+
+-- | Bus-level markers (@Fwd@/@Signal@, which bind the raw forward channel)
+-- and value-level markers (@FwdV@/@SignalV@) can be used side by side in
+-- one block: here the 'Vec' bus is rearranged at the bus level while the
+-- signal is sampled.
+mixedLevelsC :: Circuit (Vec 2 (Signal dom Int), Signal dom Int) (Vec 2 (Signal dom Int), Signal dom Int)
+mixedLevelsC = circuit \(Fwd v, SignalV a) -> do
+  idC -< (Fwd (rotateLeftS v d1), SignalV (a + 1))
 
 -- | A bus created from a value can be multicast like any other bus.
 multicastC :: Circuit (Signal dom Int) (Signal dom Int, Signal dom Int)
-multicastC = circuitV \(Signal a) -> do
-  b <- idC -< Signal (a + 1)
+multicastC = circuit \(SignalV a) -> do
+  b <- idC -< SignalV (a + 1)
   idC -< (b, b)
 
--- | Without any value-level (@Signal@/@Fwd@) markers, @circuitV@ behaves
--- exactly like @circuit@.
+-- | Without any value-level markers this is just ordinary circuit notation.
 passthrough :: Circuit (Signal dom Int) (Signal dom Int)
-passthrough = circuitV \a -> a
+passthrough = circuit \a -> a
 
 -- Multiple clock domains -------------------------------------------------
 --
@@ -252,48 +259,48 @@ passthrough = circuitV \a -> a
 -- value across domains is an (unsynchronized) clock domain crossing and is
 -- rejected by the type checker.
 
--- | Two completely independent counters in one @circuitV@ block, on two
--- /different/ clock domains: nothing forces @domA@ and @domB@ together.
+-- | Two completely independent counters in one block, on two /different/
+-- clock domains: nothing forces @domA@ and @domB@ together.
 dualCounter :: Circuit (Signal domA Bool, Signal domB Bool) (Signal domA Int, Signal domB Int)
-dualCounter = circuitV \(_ea, _eb) -> do
-  Signal n <- registerC 0 -< Signal n'
-  Signal m <- registerC 8 -< Signal m'
+dualCounter = circuit \(_ea, _eb) -> do
+  SignalV n <- registerC 0 -< SignalV n'
+  SignalV m <- registerC 8 -< SignalV m'
   let n' = n + 1
       m' = m + 1
-  idC -< (Signal n', Signal m')
+  idC -< (SignalV n', SignalV m')
 
 -- | Two independent accumulators, each reading values off its own input
 -- bus, on different clock domains.
 dualAccum :: Circuit (Signal domA Int, Signal domB Int) (Signal domA Int, Signal domB Int)
-dualAccum = circuitV \(Signal i, Signal j) -> do
-  Signal a <- registerC 0 -< Signal (a + i)
-  Signal b <- registerC 0 -< Signal (b + j)
-  idC -< (Signal a, Signal b)
+dualAccum = circuit \(SignalV i, SignalV j) -> do
+  SignalV a <- registerC 0 -< SignalV (a + i)
+  SignalV b <- registerC 0 -< SignalV (b + j)
+  idC -< (SignalV a, SignalV b)
 
 -- | Lets that don't touch any value-level variable stay at the bus level,
 -- so sub-circuits can be bound in a let and used with @-<@.
 busLevelLet :: Circuit (Signal dom Int) (Signal dom Int)
-busLevelLet = circuitV \(Signal x) -> do
+busLevelLet = circuit \(SignalV x) -> do
   let inc = plusOne
-  Signal y <- inc -< Signal (x + 1)
-  idC -< Signal (y * 2)
+  SignalV y <- inc -< SignalV (x + 1)
+  idC -< SignalV (y * 2)
 
 -- Nesting ---------------------------------------------------------------
 
--- | A @circuitV@ used as a sub-circuit inside an ordinary @circuit@.
+-- | A value-level circuit used as a sub-circuit inside a bus-level one.
 nestedSInCircuit :: Circuit (Signal dom Int) (Signal dom Int)
 nestedSInCircuit = circuit $ \a -> do
-  b <- (circuitV \(Signal x) -> do idC -< Signal (x * 2)) -< a
+  b <- (circuit \(SignalV x) -> do idC -< SignalV (x * 2)) -< a
   idC -< b
 
--- | An ordinary @circuit@ used as a sub-circuit inside a @circuitV@.
+-- | A bus-level circuit used as a sub-circuit inside a value-level one.
 nestedCircuitInS :: Circuit (Signal dom Int) (Signal dom Int)
-nestedCircuitInS = circuitV \(Signal x) -> do
-  Signal y <- (circuit \b -> b) -< Signal (x + 1)
-  idC -< Signal (y * 3)
+nestedCircuitInS = circuit \(SignalV x) -> do
+  SignalV y <- (circuit \b -> b) -< SignalV (x + 1)
+  idC -< SignalV (y * 3)
 
--- | A @circuitV@ inside another @circuitV@.
+-- | A value-level circuit inside another value-level circuit.
 nestedSInS :: Circuit (Signal dom Int) (Signal dom Int)
-nestedSInS = circuitV \(Signal x) -> do
-  Signal y <- (circuitV \(Signal a) -> do idC -< Signal (a + 1)) -< Signal x
-  idC -< Signal (y * 2)
+nestedSInS = circuit \(SignalV x) -> do
+  SignalV y <- (circuit \(SignalV a) -> do idC -< SignalV (a + 1)) -< SignalV x
+  idC -< SignalV (y * 2)

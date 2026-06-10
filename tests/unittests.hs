@@ -48,6 +48,9 @@ main = do
         [111, 222, 333, 444, 555]
     , check "vstreamC"   (sample5 (simulateC vstreamC (fromList (fmap Just [0 ..]))))
                          [Just 1, Just 2, Just 3, Just 4, Just 5]
+    , let (mlV, mlA) = simulateC mixedLevelsC (fromList [1 ..] :> fromList [10, 20 ..] :> Nil, fromList [0 ..])
+      in check "mixedLevelsC" (fmap sample5 mlV, sample5 mlA)
+                              ([10, 20, 30, 40, 50] :> [1, 2, 3, 4, 5] :> Nil, [1, 2, 3, 4, 5])
     , check "plusOneFwd" (sample5 (simulateC plusOneFwd (fromList [0 ..]))) [1, 2, 3, 4, 5]
     , check "alwaysFive" (sample5 (simulateC alwaysFive ()))                [5, 5, 5, 5, 5]
     , check "addC"       (sample5 (simulateC addC (fromList [1 ..], fromList [10, 20 ..])))

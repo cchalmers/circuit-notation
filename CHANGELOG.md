@@ -2,31 +2,32 @@
 
 ## Unreleased
 
-* Add value-level circuits via the new `circuitV` keyword. The circuit's
-  logic is written over the values sampled each clock cycle (marked with
-  `Signal`/`Fwd` patterns and expressions); the plugin lifts it back to the
-  signal level with `fmap`/`bundle`/`unbundle` and ties feedback loops with a
-  lazy let binding. See the README and example/ValueCircuits.hs.
+* Add value-level ports via the new `SignalV` and `FwdV` markers in
+  `circuit` blocks. The circuit's logic is written over the values sampled
+  each clock cycle; the plugin lifts it back to the signal level with
+  `fmap`/`bundle`/`unbundle` and ties feedback loops with a lazy let
+  binding. The bus-level `Signal`/`Fwd` markers keep their existing meaning
+  and the two levels can be mixed freely in one block. See the README and
+  example/ValueCircuits.hs.
 
-  A `circuitV` block can span several clock domains: the value-level
-  bindings are split into groups connected by shared variables and each
-  group is lifted with its own `fmap`/`bundle`/`unbundle`, so only buses
-  whose values actually meet must share a domain. Sharing a value across
-  domains is rejected by the type checker. Lets that don't touch value land
-  stay at the bus level, so let-bound sub-circuits can be used with `-<`.
+  A block can span several clock domains: the value-level bindings are
+  split into groups connected by shared variables and each group is lifted
+  with its own `fmap`/`bundle`/`unbundle`, so only buses whose values
+  actually meet must share a domain. Sharing a value across domains is
+  rejected by the type checker. Lets that don't touch value land stay at
+  the bus level, so let-bound sub-circuits can be used with `-<`.
 
-  The two boundary markers have distinct semantics: `Signal x` asserts the
+  The two value markers have distinct semantics: `SignalV x` asserts the
   bus is a `Signal` (best inference — it works against fully generic
-  sub-circuits), while `Fwd x` samples/drives the forward channel of any
+  sub-circuits), while `FwdV x` samples/drives the forward channel of any
   signal-like bus via the new `SignalBus` class (`Signal`s, `Vec`s and
   tuples of them, custom buses) but needs the bus type determined by
-  context. In bus-level `circuit` blocks the two keywords remain
-  interchangeable.
+  context.
 
   The value boundary is generated with the new `SigTag` and `FwdTag` pattern
   synonyms (`Circuit` module); `SigTag` pins the bus type to a `Signal` so
   that type inference survives nested circuits (the `Fwd` family is not
-  injective) and "too shallow" `Signal` markers report a direct
+  injective) and "too shallow" `SignalV` markers report a direct
   `Vec`-vs-`Signal` style mismatch. **Breaking**: `ExternalNames` gained
   `signalTagName` and `fwdTagName` fields, so custom plugins (e.g.
   clash-protocols style) need to supply them — `defExternalNames` is now
