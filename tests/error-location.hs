@@ -3,7 +3,7 @@
 -- When bus tagging (the @BusTag@ wrapping) was introduced, type errors on a
 -- bus stopped pointing at the offending statement and instead pointed at the
 -- end of the @circuit@ block, which made them very hard to act on. The same
--- concern applies to @circuitS@ blocks, where the value-level expressions and
+-- concern applies to @circuitV@ blocks, where the value-level expressions and
 -- lets are moved into a generated @circuitLogic@ function.
 --
 -- Each fixture in 'fixtures' deliberately fails to compile, with the
@@ -39,11 +39,11 @@ fixtures :: [Fixture]
 fixtures =
   [ -- type error on a bus in an ordinary circuit
     Fixture ("tests" </> "fixtures" </> "BusError.hs") "bus-error-marker" Nothing
-    -- type error on a value-level expression in a circuitS
+    -- type error on a value-level expression in a circuitV
   , Fixture ("tests" </> "fixtures" </> "ValueExprError.hs") "value-expr-error-marker" Nothing
-    -- type error inside a value-level let in a circuitS
+    -- type error inside a value-level let in a circuitV
   , Fixture ("tests" </> "fixtures" </> "ValueLetError.hs") "value-let-error-marker" Nothing
-    -- port error reported by the plugin itself in a circuitS
+    -- port error reported by the plugin itself in a circuitV
   , Fixture ("tests" </> "fixtures" </> "ValuePortError.hs") "value-port-error-marker"
       (Just "has no associated master")
     -- a Signal marker on a bus that is not a signal (the marker is "too

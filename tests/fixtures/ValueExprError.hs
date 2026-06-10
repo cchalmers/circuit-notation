@@ -5,7 +5,7 @@
 {-# OPTIONS -fplugin=CircuitNotation #-}
 
 -- | A fixture with a deliberate type error on a /value-level/ expression in a
--- @circuitS@ block: @a@ is an 'Int' (sampled off the input bus) but is used
+-- @circuitV@ block: @a@ is an 'Int' (sampled off the input bus) but is used
 -- with @(&&)@. The erroring statement is not the last statement of the
 -- circuit; the error-location test asserts GHC points at the tagged line and
 -- not at the end of the block (where the generated @circuitLogic@ and
@@ -20,6 +20,6 @@ registerC :: a -> Circuit (Signal dom a) (Signal dom a)
 registerC a = Circuit $ \(s :-> ()) -> (() :-> (a :- s))
 
 valueExprError :: Circuit (Signal dom Int) (Signal dom Int)
-valueExprError = circuitS \(Signal a) -> do
+valueExprError = circuitV \(Signal a) -> do
   Signal b <- registerC 0 -< Signal (a && True)      -- value-expr-error-marker
   idC -< Signal (b + a)

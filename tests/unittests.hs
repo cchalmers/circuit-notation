@@ -37,7 +37,8 @@ main = do
 
   results <- sequence
     -- basic shapes
-    [ check "plusOne"    (sample5 (simulateC plusOne (fromList [0 ..])))    [1, 2, 3, 4, 5]
+    [ check "plusOne"     (sample5 (simulateC plusOne (fromList [0 ..])))     [1, 2, 3, 4, 5]
+    , check "plusOneBare" (sample5 (simulateC plusOneBare (fromList [0 ..]))) [1, 2, 3, 4, 5]
     , check "plusOneFwd" (sample5 (simulateC plusOneFwd (fromList [0 ..]))) [1, 2, 3, 4, 5]
     , check "alwaysFive" (sample5 (simulateC alwaysFive ()))                [5, 5, 5, 5, 5]
     , check "addC"       (sample5 (simulateC addC (fromList [1 ..], fromList [10, 20 ..])))

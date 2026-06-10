@@ -3,9 +3,9 @@
 This is a plugin for manipulating circuits in clash with arrow notation. See example/Example.hs for
 example usage. Also see [clash-protocols](https://github.com/clash-lang/clash-protocols#).
 
-## Value-level circuits (`circuitS`)
+## Value-level circuits (`circuitV`)
 
-The `circuitS` keyword describes a circuit's logic over the *values sampled
+The `circuitV` keyword describes a circuit's logic over the *values sampled
 each clock cycle* instead of over whole buses. The boundary between bus land
 and value land is marked with `Signal` (or `Fwd`):
 
@@ -17,7 +17,7 @@ Haskell, and feedback loops are written as ordinary recursive `let`s:
 
 ```haskell
 counter3 :: Circuit (Signal dom Bool) (Signal dom Int)
-counter3 = circuitS \_bs -> do
+counter3 = circuitV \_bs -> do
   Signal n <- registerC 0 -< Signal n'      -- n  :: Int (this cycle's value)
   Signal m <- registerC 8 -< Signal m'      -- m  :: Int
   let n' = n + 1                            -- pure, value-level
@@ -30,7 +30,7 @@ to the signal level with `fmap` (using `bundle`/`unbundle` to group the
 buses), and ties feedback knots with lazy let bindings. See
 example/ValueCircuits.hs for more examples and the expansion of `counter3`.
 
-A single `circuitS` block can span several clock domains: the value-level
+A single `circuitV` block can span several clock domains: the value-level
 bindings are split into groups connected by shared variables, and each group
 is lifted independently, so only buses whose values actually meet must share
 a clock domain. Two independent counters on two different domains can live
@@ -45,7 +45,7 @@ Notes:
   plugin cannot (yet) know which types contain signals, so the boundary has
   to be explicit. Marking a bus that is not a `Signal` (e.g. a `Vec` of
   signals) is a type error on the offending statement.
-- In a `circuitS` block, `let` statements that use value-level variables
+- In a `circuitV` block, `let` statements that use value-level variables
   form the bodies of the generated logic functions; `let`s that don't touch
   value land (e.g. a let-bound sub-circuit) stay at the bus level and can be
   used with `-<`.

@@ -2,13 +2,13 @@
 
 ## Unreleased
 
-* Add value-level circuits via the new `circuitS` keyword. The circuit's
+* Add value-level circuits via the new `circuitV` keyword. The circuit's
   logic is written over the values sampled each clock cycle (marked with
   `Signal`/`Fwd` patterns and expressions); the plugin lifts it back to the
   signal level with `fmap`/`bundle`/`unbundle` and ties feedback loops with a
   lazy let binding. See the README and example/ValueCircuits.hs.
 
-  A `circuitS` block can span several clock domains: the value-level
+  A `circuitV` block can span several clock domains: the value-level
   bindings are split into groups connected by shared variables and each
   group is lifted with its own `fmap`/`bundle`/`unbundle`, so only buses
   whose values actually meet must share a domain. Sharing a value across
