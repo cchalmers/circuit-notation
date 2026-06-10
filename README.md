@@ -7,10 +7,22 @@ example usage. Also see [clash-protocols](https://github.com/clash-lang/clash-pr
 
 The `circuitV` keyword describes a circuit's logic over the *values sampled
 each clock cycle* instead of over whole buses. The boundary between bus land
-and value land is marked with `Signal` (or `Fwd`):
+and value land is marked with `Signal` or `Fwd`:
 
 - `Signal n <- … -< …` binds `n` to the per-cycle value carried on that bus.
 - `… -< Signal e` injects the per-cycle value `e` back onto a bus.
+
+The two markers differ in what buses they accept:
+
+- `Signal x` asserts the bus *is* a `Signal dom a`; it pins the bus type and
+  so gives the best type inference (it works against fully generic
+  sub-circuits like `idC`).
+- `Fwd x` samples (or drives) the forward channel of *any* signal-like bus —
+  any `SignalBus` instance: `Signal`s, `Vec`s and tuples of signal-like
+  buses (sampled as `Vec`s/tuples of values), and custom buses given a
+  one-line instance. In exchange, the bus type must be determined by
+  context (the circuit's signature or a concretely typed sub-circuit), and
+  pattern uses need a trivial backwards channel (`TrivialBwd (Bwd t)`).
 
 Everything in between — the `let` bindings of the do block — is ordinary pure
 Haskell, and feedback loops are written as ordinary recursive `let`s:
@@ -41,10 +53,11 @@ instead).
 
 Notes:
 
-- Pattern match down to *exactly* the `Signal` layer, no shallower; the
+- Pattern match down to *exactly* the signal layer, no shallower; the
   plugin cannot (yet) know which types contain signals, so the boundary has
-  to be explicit. Marking a bus that is not a `Signal` (e.g. a `Vec` of
-  signals) is a type error on the offending statement.
+  to be explicit. Marking a bus with `Signal` when it is not a `Signal`
+  (e.g. a `Vec` of signals) is a type error on the offending statement —
+  use `Fwd` to sample such buses whole.
 - In a `circuitV` block, `let` statements that use value-level variables
   form the bodies of the generated logic functions; `let`s that don't touch
   value land (e.g. a let-bound sub-circuit) stay at the bus level and can be

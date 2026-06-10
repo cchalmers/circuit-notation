@@ -15,12 +15,22 @@
   domains is rejected by the type checker. Lets that don't touch value land
   stay at the bus level, so let-bound sub-circuits can be used with `-<`.
 
-  The value boundary is generated with the new `SigTag` pattern synonym
-  (`Circuit` module), which pins the bus type to a `Signal` so that type
-  inference survives nested circuits (the `Fwd` family is not injective) and
-  "too shallow" `Signal` markers report a direct `Vec`-vs-`Signal` style
-  mismatch. **Breaking**: `ExternalNames` gained a `signalTagName` field, so
-  custom plugins (e.g. clash-protocols style) need to supply it.
+  The two boundary markers have distinct semantics: `Signal x` asserts the
+  bus is a `Signal` (best inference — it works against fully generic
+  sub-circuits), while `Fwd x` samples/drives the forward channel of any
+  signal-like bus via the new `SignalBus` class (`Signal`s, `Vec`s and
+  tuples of them, custom buses) but needs the bus type determined by
+  context. In bus-level `circuit` blocks the two keywords remain
+  interchangeable.
+
+  The value boundary is generated with the new `SigTag` and `FwdTag` pattern
+  synonyms (`Circuit` module); `SigTag` pins the bus type to a `Signal` so
+  that type inference survives nested circuits (the `Fwd` family is not
+  injective) and "too shallow" `Signal` markers report a direct
+  `Vec`-vs-`Signal` style mismatch. **Breaking**: `ExternalNames` gained
+  `signalTagName` and `fwdTagName` fields, so custom plugins (e.g.
+  clash-protocols style) need to supply them — `defExternalNames` is now
+  exported so they can be record updates of the defaults.
 * Add a per-GHC `checks` output to the flake, so `nix flake check` (or
   `nix build .#checks.<system>.<ghc>`) builds the package and runs all test
   suites against every supported GHC. The CI nix job now uses it. The

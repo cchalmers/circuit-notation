@@ -14,7 +14,9 @@ simulated and checked by tests/unittests.hs.
 {-# LANGUAGE BlockArguments      #-}
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies        #-}
 
 {-# OPTIONS -fplugin=CircuitNotation #-}
 {-# OPTIONS -Wall #-}
@@ -49,11 +51,46 @@ plusOne = circuitV \(Signal a) -> do
 plusOneBare :: Circuit (Signal dom Int) (Signal dom Int)
 plusOneBare = circuitV \(Signal a) -> Signal (a + 1)
 
--- | The @Fwd@ keyword can be used interchangeably with @Signal@ to mark the
--- value boundary.
+-- | The @Fwd@ keyword also marks the value boundary, but works on /any/
+-- signal-like bus (any 'SignalBus' instance) rather than only literal
+-- 'Signal's. The trade-off: the bus type must be determined by context
+-- (here, the signature).
 plusOneFwd :: Circuit (Signal dom Int) (Signal dom Int)
 plusOneFwd = circuitV \(Fwd a) -> do
   idC -< Fwd (a + 1)
+
+-- | A whole 'Vec' of signal buses sampled as a single @Vec n Int@ value per
+-- cycle (via the 'SignalBus' instance for 'Vec').
+vecSampleC :: Circuit (Vec 2 (Signal dom Int)) (Signal dom Int)
+vecSampleC = circuitV \(Fwd v) -> do
+  idC -< Signal (sum v)
+
+-- | ... and emitted back as one: a @Vec 2 Int@ value drives both buses.
+vecEmitC :: Circuit (Signal dom Int) (Vec 2 (Signal dom Int))
+vecEmitC = circuitV \(Signal a) -> do
+  idC -< Fwd (a :> (a + 1) :> Nil)
+
+-- | @Signal@ and @Fwd@ markers can meet in the same logic group.
+mixedMarkersC :: Circuit (Signal dom Int, Vec 2 (Signal dom Int)) (Signal dom Int)
+mixedMarkersC = circuitV \(Signal a, Fwd v) -> do
+  idC -< Signal (a + sum v)
+
+-- | A custom signal-like bus: a stream of optionally-valid values with no
+-- backpressure. The 'SignalBus' instance is all that's needed for @Fwd@
+-- markers to sample and drive it in @circuitV@ blocks.
+data VStream (dom :: Domain) a
+type instance Fwd (VStream dom a) = Signal dom (Maybe a)
+type instance Bwd (VStream dom a) = ()
+
+instance SignalBus (VStream dom a) where
+  type BusDom (VStream dom a) = dom
+  type SampleOf (VStream dom a) = Maybe a
+  sigFromBus = unBusTag
+  sigToBus = BusTag
+
+vstreamC :: Circuit (VStream dom Int) (VStream dom Int)
+vstreamC = circuitV \(Fwd m) -> do
+  idC -< Fwd (fmap (+ 1) m)
 
 -- | No value inputs at all: the logic is constant.
 alwaysFive :: Circuit () (Signal dom Int)

@@ -39,6 +39,15 @@ main = do
     -- basic shapes
     [ check "plusOne"     (sample5 (simulateC plusOne (fromList [0 ..])))     [1, 2, 3, 4, 5]
     , check "plusOneBare" (sample5 (simulateC plusOneBare (fromList [0 ..]))) [1, 2, 3, 4, 5]
+    , check "vecSampleC" (sample5 (simulateC vecSampleC (fromList [1 ..] :> fromList [10, 20 ..] :> Nil)))
+                         [11, 22, 33, 44, 55]
+    , check "vecEmitC"   (fmap sample5 (simulateC vecEmitC (fromList [0 ..])))
+                         ([0, 1, 2, 3, 4] :> [1, 2, 3, 4, 5] :> Nil)
+    , check "mixedMarkersC"
+        (sample5 (simulateC mixedMarkersC (fromList [100, 200 ..], fromList [1 ..] :> fromList [10, 20 ..] :> Nil)))
+        [111, 222, 333, 444, 555]
+    , check "vstreamC"   (sample5 (simulateC vstreamC (fromList (fmap Just [0 ..]))))
+                         [Just 1, Just 2, Just 3, Just 4, Just 5]
     , check "plusOneFwd" (sample5 (simulateC plusOneFwd (fromList [0 ..]))) [1, 2, 3, 4, 5]
     , check "alwaysFive" (sample5 (simulateC alwaysFive ()))                [5, 5, 5, 5, 5]
     , check "addC"       (sample5 (simulateC addC (fromList [1 ..], fromList [10, 20 ..])))

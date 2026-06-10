@@ -208,11 +208,73 @@ pattern BusTagBundle a <- (taggedUnbundle -> a) where
   BusTagBundle a = taggedBundle a
 {-# COMPLETE BusTagBundle #-}
 
--- | A tagged 'Signal' bus. Used by the plugin at the value boundary of
--- 'circuitV' blocks: matching or constructing with 'SigTag' pins the bus
--- type itself (the tag) to be a 'Signal', which is what the value boundary
--- requires. Since 'Fwd' is not injective, plain 'BusTag' would leave the bus
--- type ambiguous and type inference for nested circuits would fail.
+-- | A tagged 'Signal' bus. Used by the plugin for @Signal@ markers at the
+-- value boundary of 'circuitV' blocks: matching or constructing with
+-- 'SigTag' pins the bus type itself (the tag) to be a 'Signal', which
+-- drives type inference. Since 'Fwd' is not injective, plain 'BusTag' would
+-- leave the bus type ambiguous and type inference for nested circuits would
+-- fail.
 pattern SigTag :: Signal dom a -> BusTag (Signal dom a) (Signal dom a)
 pattern SigTag s = BusTag s
 {-# COMPLETE SigTag #-}
+
+-- | Buses whose forward channel carries a single value per clock cycle,
+-- i.e. is convertible to a single 'Signal'. The @Fwd@ markers at the value
+-- boundary of @circuitV@ blocks work on any such bus: 'Signal's themselves,
+-- 'Vec's and tuples of signal-like buses (all in the same domain), and any
+-- custom bus given an instance.
+class SignalBus t where
+  type BusDom t :: Domain
+  type SampleOf t
+  -- | Sample the forward channel of a tagged bus as a signal of values.
+  sigFromBus :: BusTag t (Fwd t) -> Signal (BusDom t) (SampleOf t)
+  -- | Drive the forward channel of a tagged bus from a signal of values.
+  sigToBus :: Signal (BusDom t) (SampleOf t) -> BusTag t (Fwd t)
+
+instance SignalBus (Signal dom a) where
+  type BusDom (Signal dom a) = dom
+  type SampleOf (Signal dom a) = a
+  sigFromBus = unBusTag
+  sigToBus = BusTag
+
+-- | A 'Vec' of signal-like buses is sampled as a 'Vec' of their values.
+instance (SignalBus t, KnownNat n) => SignalBus (Vec n t) where
+  type BusDom (Vec n t) = BusDom t
+  type SampleOf (Vec n t) = Vec n (SampleOf t)
+  sigFromBus (BusTag v) = bundle (map (\f -> sigFromBus (BusTag f :: BusTag t (Fwd t))) v)
+  sigToBus s = BusTag (map (\x -> unBusTag (sigToBus x :: BusTag t (Fwd t))) (unbundle s))
+
+instance (SignalBus a, SignalBus b, BusDom a ~ BusDom b) => SignalBus (a, b) where
+  type BusDom (a, b) = BusDom a
+  type SampleOf (a, b) = (SampleOf a, SampleOf b)
+  sigFromBus (BusTag (fa, fb)) = bundle
+    ( sigFromBus (BusTag fa :: BusTag a (Fwd a))
+    , sigFromBus (BusTag fb :: BusTag b (Fwd b)) )
+  sigToBus s = case unbundle s of
+    (sa, sb) -> BusTag
+      ( unBusTag (sigToBus sa :: BusTag a (Fwd a))
+      , unBusTag (sigToBus sb :: BusTag b (Fwd b)) )
+
+instance (SignalBus a, SignalBus b, SignalBus c, BusDom a ~ BusDom b, BusDom b ~ BusDom c)
+    => SignalBus (a, b, c) where
+  type BusDom (a, b, c) = BusDom a
+  type SampleOf (a, b, c) = (SampleOf a, SampleOf b, SampleOf c)
+  sigFromBus (BusTag (fa, fb, fc)) = bundle
+    ( sigFromBus (BusTag fa :: BusTag a (Fwd a))
+    , sigFromBus (BusTag fb :: BusTag b (Fwd b))
+    , sigFromBus (BusTag fc :: BusTag c (Fwd c)) )
+  sigToBus s = case unbundle s of
+    (sa, sb, sc) -> BusTag
+      ( unBusTag (sigToBus sa :: BusTag a (Fwd a))
+      , unBusTag (sigToBus sb :: BusTag b (Fwd b))
+      , unBusTag (sigToBus sc :: BusTag c (Fwd c)) )
+
+-- | Like 'SigTag' but for any signal-like bus. Used by the plugin for @Fwd@
+-- markers at the value boundary of @circuitV@ blocks. Unlike 'SigTag' it
+-- cannot drive type inference (several buses can share a forward type), so
+-- the bus type has to be determined by context, e.g. the circuit's
+-- signature or a concretely typed sub-circuit.
+pattern FwdTag :: SignalBus t => Signal (BusDom t) (SampleOf t) -> BusTag t (Fwd t)
+pattern FwdTag s <- (sigFromBus -> s) where
+  FwdTag s = sigToBus s
+{-# COMPLETE FwdTag #-}
