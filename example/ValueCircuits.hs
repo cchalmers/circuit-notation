@@ -201,6 +201,40 @@ multicastC = circuitS \(Signal a) -> do
 passthrough :: Circuit (Signal dom Int) (Signal dom Int)
 passthrough = circuitS \a -> a
 
+-- Multiple clock domains -------------------------------------------------
+--
+-- The plugin splits the value-level logic into groups connected by shared
+-- variables and lifts each group with its own fmap/bundle/unbundle, so only
+-- buses whose values actually meet must share a clock domain. Sharing a
+-- value across domains is an (unsynchronized) clock domain crossing and is
+-- rejected by the type checker.
+
+-- | Two completely independent counters in one @circuitS@ block, on two
+-- /different/ clock domains: nothing forces @domA@ and @domB@ together.
+dualCounter :: Circuit (Signal domA Bool, Signal domB Bool) (Signal domA Int, Signal domB Int)
+dualCounter = circuitS \(_ea, _eb) -> do
+  Signal n <- registerC 0 -< Signal n'
+  Signal m <- registerC 8 -< Signal m'
+  let n' = n + 1
+      m' = m + 1
+  idC -< (Signal n', Signal m')
+
+-- | Two independent accumulators, each reading values off its own input
+-- bus, on different clock domains.
+dualAccum :: Circuit (Signal domA Int, Signal domB Int) (Signal domA Int, Signal domB Int)
+dualAccum = circuitS \(Signal i, Signal j) -> do
+  Signal a <- registerC 0 -< Signal (a + i)
+  Signal b <- registerC 0 -< Signal (b + j)
+  idC -< (Signal a, Signal b)
+
+-- | Lets that don't touch any value-level variable stay at the bus level,
+-- so sub-circuits can be bound in a let and used with @-<@.
+busLevelLet :: Circuit (Signal dom Int) (Signal dom Int)
+busLevelLet = circuitS \(Signal x) -> do
+  let inc = plusOne
+  Signal y <- inc -< Signal (x + 1)
+  idC -< Signal (y * 2)
+
 -- Nesting ---------------------------------------------------------------
 
 -- | A @circuitS@ used as a sub-circuit inside an ordinary @circuit@.

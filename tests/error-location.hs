@@ -50,6 +50,11 @@ fixtures =
     -- shallow"); the SigTag the plugin generates should turn this into a
     -- direct Vec-vs-Signal mismatch on the offending pattern
   , Fixture ("tests" </> "fixtures" </> "ValueShapeError.hs") "value-shape-error-marker" Nothing
+    -- sharing a value-level variable across two clock domains; the merged
+    -- group's bundle demands one domain, so this must be a domain-mismatch
+    -- type error
+  , Fixture ("tests" </> "fixtures" </> "CrossDomainError.hs") "cross-domain-error-marker"
+      (Just "Couldn't match type")
   ]
 
 main :: IO ()

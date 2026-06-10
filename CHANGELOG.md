@@ -8,6 +8,13 @@
   signal level with `fmap`/`bundle`/`unbundle` and ties feedback loops with a
   lazy let binding. See the README and example/ValueCircuits.hs.
 
+  A `circuitS` block can span several clock domains: the value-level
+  bindings are split into groups connected by shared variables and each
+  group is lifted with its own `fmap`/`bundle`/`unbundle`, so only buses
+  whose values actually meet must share a domain. Sharing a value across
+  domains is rejected by the type checker. Lets that don't touch value land
+  stay at the bus level, so let-bound sub-circuits can be used with `-<`.
+
   The value boundary is generated with the new `SigTag` pattern synonym
   (`Circuit` module), which pins the bus type to a `Signal` so that type
   inference survives nested circuits (the `Fwd` family is not injective) and

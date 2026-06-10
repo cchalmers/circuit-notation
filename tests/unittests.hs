@@ -12,6 +12,7 @@ import           System.Exit   (exitFailure)
 import           Clash.Prelude (NFDataX, Signal, System, Vec ((:>), Nil),
                                 fromList, sampleN)
 
+import           Circuit       (Circuit)
 import           Example       ()
 import           ValueCircuits
 
@@ -69,6 +70,18 @@ main = do
     , check "mixedC"      (sample5 mixA, sample5 mixB) ([1, 2, 3, 4, 5], [5, 6, 7, 8, 9])
     , check "multicastC"  (sample5 mcA, sample5 mcB)   ([1, 2, 3, 4, 5], [1, 2, 3, 4, 5])
     , check "passthrough" (sample5 (simulateC passthrough (fromList [3 ..]))) [3, 4, 5, 6, 7]
+
+    -- multiple clock domains (instantiated at the same domain here; the
+    -- different-domain property is the fact that the signatures compile)
+    , let (dcA, dcB) = simulateC
+            (dualCounter :: Circuit (Signal System Bool, Signal System Bool) (Signal System Int, Signal System Int))
+            (pure False, pure False)
+      in check "dualCounter" (sample5 dcA, sample5 dcB) ([1, 2, 3, 4, 5], [9, 10, 11, 12, 13])
+    , let (daA, daB) = simulateC
+            (dualAccum :: Circuit (Signal System Int, Signal System Int) (Signal System Int, Signal System Int))
+            (fromList [1 ..], fromList [10, 20 ..])
+      in check "dualAccum" (sample5 daA, sample5 daB) ([0, 1, 3, 6, 10], [0, 10, 30, 60, 100])
+    , check "busLevelLet" (sample5 (simulateC busLevelLet (fromList [0 ..]))) [4, 6, 8, 10, 12]
 
     -- nesting
     , check "nestedSInCircuit" (sample5 (simulateC nestedSInCircuit (fromList [0 ..]))) [0, 2, 4, 6, 8]

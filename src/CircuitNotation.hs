@@ -41,9 +41,14 @@ module CircuitNotation
 import           Control.Exception
 import qualified Data.Data              as Data
 import           Data.Default
+import           Data.List              (partition, sort, sortOn)
 import           Data.Maybe             (fromMaybe)
 import           System.IO.Unsafe
 import           Data.Typeable
+
+-- containers
+import qualified Data.Map.Strict        as Map
+import qualified Data.Set               as Set
 
 -- ghc
 import qualified Language.Haskell.TH    as TH
@@ -1137,46 +1142,169 @@ circuitSQQExpM' = do
   circuitMasters .= masters1
   circuitBinds .= binds2
 
-  -- In a value circuit the do-block lets are value-level; they form the body
-  -- of circuitLogic rather than ending up in the outer (bus-level) let.
+  -- In a value circuit the do-block lets are value-level; they form the
+  -- bodies of the generated logic functions rather than ending up in the
+  -- outer (bus-level) let -- except for lets that don't touch any
+  -- value-level variable, which stay in the outer let (so e.g. a let-bound
+  -- sub-circuit can still be used with @-<@).
   lets <- L.use circuitLets
   completes <- L.use circuitCompletes
   letTypes <- L.use circuitTypes
 
-  let logicLam = lamE [tupP inPats] (letE noSrcSpanA letTypes lets (tupE noSrcSpanA outExprs))
-      logicBind = L loc $ patBind (varP noSrcSpanA logicName) logicLam
+  -- see [value-components]
+  let valueNames = Set.fromList (concatMap patVarNames inPats <> concatMap bindDefinedNames lets)
+      valueFvs :: SYB.Data a => a -> Set.Set String
+      valueFvs a = Set.intersection (freeVarNames a) valueNames
 
-  -- (outBuses) = unbundle (fmap circuitLogic (bundle (inBuses)))
-  -- bundle/unbundle are only needed when there is more than one bus. With no
-  -- inputs at all the logic is constant, so it is mapped over @pure ()@.
-  let inVars = map (\i -> varE noSrcSpanA (var (inPrefix <> show i))) [0 .. numIns - 1]
-      outVarPs = map (\i -> varP noSrcSpanA (outPrefix <> show i)) [0 .. numOuts - 1]
+      items =
+        [ (ItemIn i, Set.fromList (patVarNames p)) | (i, p) <- zip [0 ..] inPats ] <>
+        [ (ItemOut k, valueFvs e) | (k, e) <- zip [0 ..] outExprs ] <>
+        [ (ItemLet j, Set.fromList (bindDefinedNames b) `Set.union` valueFvs b)
+        | (j, b) <- zip [0 ..] lets ]
 
-      bundled = case inVars of
-        []  -> varE noSrcSpanA (thName 'pure) `appE` tupE noSrcSpanA []
-        [e] -> e
-        es  -> varE noSrcSpanA (thName 'bundle) `appE` tupE noSrcSpanA es
-      lifted = varE noSrcSpanA (thName 'fmap) `appE` varE noSrcSpanA (var logicName) `appE` bundled
+      itemSeq = \case
+        ItemIn i  -> i
+        ItemOut k -> numIns + k
+        ItemLet j -> numIns + numOuts + j
+      isBoundary = \case ItemLet{} -> False; _ -> True
 
-      knotPat = case outVarPs of
-        [] -> nlWildPat
-        ps -> tupP ps
-      knotExpr = if numOuts > 1
-        then varE noSrcSpanA (thName 'unbundle) `appE` lifted
-        else lifted
-      knotBind = L loc $ patBind knotPat knotExpr
+      groups = sortOn (minimum . map itemSeq . fst) (groupComponents items)
+      (innerGroups, outerGroups) = partition (any isBoundary . fst) groups
+
+      -- lets disconnected from the value boundary stay in the outer let
+      outerLets = [ lets !! j | (its, _) <- outerGroups, ItemLet j <- its ]
+
+      -- assign user type signatures to the group that binds their name,
+      -- splitting multi-name signatures if necessary
+      nameComp = Map.fromList
+        [ (n, ci) | (ci, (_, ns)) <- zip [0 :: Int ..] innerGroups, n <- Set.toList ns ]
+      sigComp (L _ rdr) = case unqualName rdr of
+        [n] -> Map.lookup n nameComp
+        _   -> Nothing
+      splitSigs = concatMap
+        (\lsig@(L l s) -> case s of
+            TypeSig x ids ty ->
+              [ (c, L l (TypeSig x ids' ty))
+              | (c, ids') <- Map.toList (Map.fromListWith (flip (<>)) [ (sigComp i, [i]) | i <- ids ]) ]
+            _ -> [(Nothing, lsig)])
+        letTypes
+      sigsForComp ci = [ s | (Just ci', s) <- splitSigs, ci' == ci ]
+      outerSigs = [ s | (Nothing, s) <- splitSigs ]
+
+      -- One logic function and one lifted knot binding per group:
+      --   circuitLogic_cN = \(ins) -> let <lets> in (outs)
+      --   (outBuses) = unbundle (fmap circuitLogic_cN (bundle (inBuses)))
+      -- bundle/unbundle are only needed when there is more than one bus, and
+      -- with no inputs at all the logic is constant, so it is mapped over
+      -- @pure ()@. The generated bundle elements and knot patterns take the
+      -- source locations of the original Signal markers, so clock domain
+      -- mismatches are reported on the offending marker. Groups with no
+      -- outputs produce no value (their logic would be dead) and generate
+      -- nothing.
+      mkComp ci (its, _) =
+        let ins  = sort [ i | ItemIn i <- its ]
+            outs = sort [ k | ItemOut k <- its ]
+            ls   = sort [ j | ItemLet j <- its ]
+            logicNm = logicName <> "_c" <> show ci
+            logicLam = lamE [tupP (map (inPats !!) ins)]
+              (letE noSrcSpanA (sigsForComp ci) (map (lets !!) ls)
+                    (tupE noSrcSpanA (map (outExprs !!) outs)))
+            logicBind = L loc $ patBind (varP noSrcSpanA logicNm) logicLam
+
+            inVars = map (\i -> let (L l _) = inPats !! i in varE l (var (inPrefix <> show i))) ins
+            outVarPs = map (\k -> let (L l _) = outExprs !! k in varP l (outPrefix <> show k)) outs
+
+            bundled = case inVars of
+              []  -> varE noSrcSpanA (thName 'pure) `appE` tupE noSrcSpanA []
+              [e] -> e
+              es  -> varE noSrcSpanA (thName 'bundle) `appE` tupE noSrcSpanA es
+            lifted = varE noSrcSpanA (thName 'fmap) `appE` varE noSrcSpanA (var logicNm) `appE` bundled
+            knotExpr = if length outs > 1
+              then varE noSrcSpanA (thName 'unbundle) `appE` lifted
+              else lifted
+            knotBind = L loc $ patBind (tupP outVarPs) knotExpr
+        in if null outs then [] else [logicBind, knotBind]
+
+      compDecs = concat (zipWith mkComp [0 ..] innerGroups)
 
   -- The bus plumbing is generated exactly as in 'circuitQQExpM'.
   let decFromBinding' b@Binding{bCircuit = L cloc _} = L cloc (decFromBinding dflags b)
-  let decs = logicBind : knotBind : completes <> map decFromBinding' binds2
+  let decs = compDecs <> outerLets <> completes <> map decFromBinding' binds2
 
   let pats = bindOutputs dflags Fwd masters1 slaves1
       res  = createInputs Bwd slaves1 masters1
 
       body :: LHsExpr GhcPs
-      body = letE noSrcSpanA [] decs res
+      body = letE noSrcSpanA outerSigs decs res
 
   pure $ circuitConstructor noSrcSpanA `appE` lamE [pats] body
+
+-- [value-components]
+-- The value-level bindings of a @circuitS@ block are split into the
+-- connected components of their shared-variable graph before lifting: an
+-- input variable (Signal pattern), output expression (Signal expression) or
+-- let binding belongs to the same group as anything it shares a value-level
+-- variable with. Each group is lifted with its own fmap/bundle/unbundle, so
+-- only buses whose values actually meet are bundled -- which is what allows
+-- a single circuitS block to span several clock domains: per-cycle values
+-- may only meet if their buses are synchronous, and 'bundle' enforces
+-- exactly that per group. Sharing a variable across domains is an
+-- (unsynchronized) clock domain crossing and is rejected by the type
+-- checker; crossing domains must be done with explicit bus-level
+-- synchronizer circuits.
+--
+-- The analysis is purely syntactic and conservative: free variables are
+-- over-approximated by all unqualified variable occurrences (no scope
+-- tracking), so shadowing can only ever merge groups that strictly wouldn't
+-- need merging (a false same-domain constraint), never split things that
+-- belong together.
+
+-- | An occurrence of the value boundary (or a let between boundaries) in a
+-- @circuitS@ block; the @Int@ indexes into the respective collection.
+data ValueItem = ItemIn Int | ItemOut Int | ItemLet Int
+
+-- | Group items into connected components: items (transitively) sharing a
+-- name end up in the same group.
+groupComponents :: [(ValueItem, Set.Set String)] -> [([ValueItem], Set.Set String)]
+groupComponents = foldl step []
+  where
+    step groups (it, ns) =
+      let (touching, rest) = partition (\(_, gns) -> not (Set.disjoint ns gns)) groups
+      in (concatMap fst touching <> [it], Set.unions (ns : map snd touching)) : rest
+
+unqualName :: GHC.RdrName -> [String]
+unqualName = \case
+  GHC.Unqual occ -> [OccName.occNameString occ]
+  _ -> []
+
+-- | Variable names bound by a pattern (conservative, syntactic; as-pattern
+-- names are not collected).
+patVarNames :: LPat GhcPs -> [String]
+patVarNames = SYB.everything (<>) (SYB.mkQ [] q)
+  where
+    q :: Pat GhcPs -> [String]
+    q = \case
+      VarPat _ (L _ rdr) -> unqualName rdr
+      _ -> []
+
+-- | All unqualified variable occurrences: a conservative over-approximation
+-- of the free variables (bound variables of nested lambdas/lets/cases are
+-- included).
+freeVarNames :: SYB.Data a => a -> Set.Set String
+freeVarNames = Set.fromList . SYB.everything (<>) (SYB.mkQ [] q)
+  where
+    q :: HsExpr GhcPs -> [String]
+    q = \case
+      HsVar _ (L _ rdr) -> unqualName rdr
+      _ -> []
+
+-- | The names a let binding defines.
+bindDefinedNames :: LHsBind GhcPs -> [String]
+bindDefinedNames (L _ b) = case b of
+  FunBind { fun_id = L _ rdr } -> unqualName rdr
+  PatBind { pat_lhs = lpat } -> patVarNames lpat
+  VarBind { var_id = rdr } -> unqualName rdr
+  _ -> []
 
 grr :: MonadIO m => OccName.NameSpace -> m ()
 grr nm

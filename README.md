@@ -25,10 +25,19 @@ counter3 = circuitS \_bs -> do
   idC -< Signal (n' + m')
 ```
 
-The plugin collects the value-level bindings into a single pure function,
-lifts it to the signal level with `fmap` (using `bundle`/`unbundle` to group
-the buses), and ties the feedback knot with a lazy let binding. See
+The plugin collects the value-level bindings into pure functions, lifts them
+to the signal level with `fmap` (using `bundle`/`unbundle` to group the
+buses), and ties feedback knots with lazy let bindings. See
 example/ValueCircuits.hs for more examples and the expansion of `counter3`.
+
+A single `circuitS` block can span several clock domains: the value-level
+bindings are split into groups connected by shared variables, and each group
+is lifted independently, so only buses whose values actually meet must share
+a clock domain. Two independent counters on two different domains can live
+in one block; making their values meet (e.g. `Signal (n + m)`) is an
+unsynchronized clock domain crossing and is rejected by the type checker
+(cross between domains with explicit bus-level synchronizer circuits
+instead).
 
 Notes:
 
@@ -36,7 +45,10 @@ Notes:
   plugin cannot (yet) know which types contain signals, so the boundary has
   to be explicit. Marking a bus that is not a `Signal` (e.g. a `Vec` of
   signals) is a type error on the offending statement.
-- In a `circuitS` block, `let` statements are value-level: they form the body
-  of the generated logic function and cannot define new buses or circuits.
-- All buses crossing the value boundary must share the same clock domain
-  (they are combined with `bundle`).
+- In a `circuitS` block, `let` statements that use value-level variables
+  form the bodies of the generated logic functions; `let`s that don't touch
+  value land (e.g. a let-bound sub-circuit) stay at the bus level and can be
+  used with `-<`.
+- The grouping is syntactic and conservative: shadowing a value-level name
+  inside a `let` can merge groups that wouldn't strictly need to share a
+  domain (never the other way around).
