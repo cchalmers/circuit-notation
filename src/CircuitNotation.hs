@@ -1273,7 +1273,22 @@ valueCircuitQQExpM = do
               SignalGroup  -> (thName 'bundle, thName 'unbundle)
               DSignalGroup -> (thName 'DBundle.bundle, thName 'DBundle.unbundle)
             logicNm = logicName <> "_c" <> show ci
-            logicLam = lamE [tupP (map (snd . (inPats !!)) ins)]
+            -- A leading lazy unit keeps every real input out of 'bundle's
+            -- spine-forcing head slot ('bundle' lifts its first element with
+            -- 'fmap' / 'mapSignal#', which forces that element's spine), so
+            -- combinational feedback between value groups does not deadlock
+            -- simulation.
+            pureUnitE = varE noSrcSpanA (thName 'pure) `appE` tupE noSrcSpanA []
+            -- Each value-input pattern is matched lazily (irrefutable), as the
+            -- bus-level plumbing already is. A strict value pattern (e.g. a
+            -- constructor pattern that destructures the sampled value at the
+            -- boundary) would force its input to produce ANY of the group's
+            -- outputs -- even outputs that don't use it -- which deadlocks when
+            -- that input depends, through the circuit, on such an output.
+            logicPat = case ins of
+              [] -> tupP []
+              _  -> tupP (L noSrcSpanA (WildPat noExtField) : map (tildeP noSrcSpanA . snd . (inPats !!)) ins)
+            logicLam = lamE [logicPat]
               (letE noSrcSpanA (sigsForComp ci) (map (lets !!) ls)
                     (tupE noSrcSpanA (map (snd . (outExprs !!)) outs)))
             logicBind = L loc $ patBind (varP noSrcSpanA logicNm) logicLam
@@ -1282,9 +1297,8 @@ valueCircuitQQExpM = do
             outVarPs = map (\k -> let (L l _) = snd (outExprs !! k) in varP l (outPrefix <> show k)) outs
 
             bundled = case inVars of
-              []  -> varE noSrcSpanA (thName 'pure) `appE` tupE noSrcSpanA []
-              [e] -> e
-              es  -> varE noSrcSpanA bundleNm `appE` tupE noSrcSpanA es
+              [] -> pureUnitE
+              es -> varE noSrcSpanA bundleNm `appE` tupE noSrcSpanA (pureUnitE : es)
             lifted = varE noSrcSpanA (thName 'fmap) `appE` varE noSrcSpanA (var logicNm) `appE` bundled
             knotExpr = if length outs > 1
               then varE noSrcSpanA unbundleNm `appE` lifted
