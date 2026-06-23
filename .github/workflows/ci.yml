@@ -14,15 +14,23 @@ concurrency:
 jobs:
   # TODO: Not sure how to cache this one.. cachix?
   nix:
-    name: nix build
+    name: nix / ${{ matrix.ghc }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in sync with the tested-with field in circuit-notation.cabal
+        # (the names come from clash-compiler's supportedGhcVersions).
+        ghc: [ghc967, ghc984, ghc9103, ghc9124]
     steps:
       - uses: actions/checkout@v3
       - uses: cachix/install-nix-action@v31
 
-      - name: Build
+      # Builds the package (whose own check phase runs the unit tests) and
+      # then runs all test suites against it, for this ghc version.
+      - name: Build and test
         run: |
-          nix build
+          nix build -L .#checks.x86_64-linux.${{ matrix.ghc }}
 
   cabal:
     name: ${{ matrix.os }} / ghc ${{ matrix.ghc }}

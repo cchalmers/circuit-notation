@@ -37,7 +37,7 @@
             { name = compiler-version; value = overlay; }
           ) supported-versions);
 
-        all-hs-pkgs = builtins.mapAttrs (compiler-version: overlay:
+        all-envs = builtins.mapAttrs (compiler-version: overlay:
           let
             pkgs = (import clash-compiler.inputs.nixpkgs {
               inherit system;
@@ -46,8 +46,42 @@
 
             hs-pkgs = clash-pkgs.extend overlay;
           in
-            hs-pkgs
+            { inherit pkgs hs-pkgs; }
           ) all-overlays;
+
+        all-hs-pkgs = builtins.mapAttrs (_: env: env.hs-pkgs) all-envs;
+
+        # Run the test suites against each supported ghc version (so
+        # `nix flake check` is the multi-ghc test driver). The library's nix
+        # build already runs the suites that can work inside a plain package
+        # build; this additionally covers tests/error-location.hs, which
+        # needs a ghc with circuit-notation registered in its package
+        # database (it compiles tests/fixtures/BusError.hs with the plugin
+        # enabled and asserts where the error is reported).
+        all-checks = builtins.mapAttrs (compiler-version: env:
+          let
+            test-ghc = env.hs-pkgs.ghcWithPackages (p: [
+              p.circuit-notation
+              p.clash-prelude
+              p.directory
+              p.filepath
+              p.process
+            ]);
+          in
+            env.pkgs.runCommand "circuit-notation-tests-${compiler-version}"
+              { nativeBuildInputs = [ test-ghc ]; } ''
+                cd ${self}
+                mkdir -p "$TMPDIR/unittests" "$TMPDIR/error-location"
+                # -XHaskell2010 to match the cabal file's default-language
+                ghc -XHaskell2010 -itests -iexample -outputdir "$TMPDIR/unittests" \
+                  -o "$TMPDIR/unittests/test" tests/unittests.hs
+                "$TMPDIR/unittests/test"
+                ghc -XHaskell2010 -itests -outputdir "$TMPDIR/error-location" \
+                  -o "$TMPDIR/error-location/test" tests/error-location.hs
+                "$TMPDIR/error-location/test"
+                touch $out
+              ''
+          ) all-envs;
 
         all-shells = builtins.mapAttrs (_: hs-pkgs:
           hs-pkgs.shellFor {
@@ -84,5 +118,10 @@
         # The default directly refers to the default package of the default ghc version of this flake
         # All other entries aren't packages, they're a set of packages for each supported ghc version
         packages = all-packages // { default = all-packages.${default-version}.${default-package}; };
+
+        # Test suites run against every supported ghc version; run them all
+        # with `nix flake check` or a single one with e.g.
+        # `nix build .#checks.x86_64-linux.ghc967`.
+        checks = all-checks;
       });
 }

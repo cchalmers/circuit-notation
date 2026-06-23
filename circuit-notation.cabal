@@ -20,6 +20,10 @@ extra-doc-files:
   CHANGELOG.md
   README.md
 
+-- fixtures compiled by the error-location test suite
+extra-source-files:
+  tests/fixtures/*.hs
+
 tested-with:
   ghc ==9.6.7
   ghc ==9.8.4
