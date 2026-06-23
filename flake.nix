@@ -19,6 +19,18 @@
               circuit-notation = prev.developPackage {
                 root = ./.;
                 overrides = _: _: final;
+                # The error-location test shells out to `ghc` to compile a
+                # fixture with the plugin enabled (see tests/error-location.hs).
+                # During the package's own check phase circuit-notation isn't
+                # registered in any package database yet, so that `ghc` couldn't
+                # find the plugin. Point GHC_PACKAGE_PATH (via the builder's
+                # NIX_GHC_PACKAGE_PATH_FOR_TEST hook) at the in-place package db
+                # so the test runs for real, not just under cabal in CI.
+                modifier = drv: drv.overrideAttrs (old: {
+                  preCheck = (old.preCheck or "") + ''
+                    export NIX_GHC_PACKAGE_PATH_FOR_TEST="$PWD/dist/package.conf.inplace:$packageConfDir:"
+                  '';
+                });
               };
             };
           in

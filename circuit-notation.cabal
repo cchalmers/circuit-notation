@@ -71,3 +71,18 @@ test-suite library-testsuite
     base,
     circuit-notation,
     clash-prelude >=1.0,
+
+-- Checks that type errors on a bus point at the offending statement rather than
+-- at the end of the circuit (see tests/fixtures/BusError.hs).
+test-suite error-location
+  default-language: Haskell2010
+  type: exitcode-stdio-1.0
+  main-is: error-location.hs
+  hs-source-dirs: tests
+  build-depends:
+    base,
+    circuit-notation,
+    clash-prelude >=1.0,
+    directory,
+    filepath,
+    process,
