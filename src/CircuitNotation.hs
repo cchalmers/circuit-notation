@@ -980,8 +980,12 @@ circuitQQExpM = do
   slaves <- L.use circuitSlaves
   masters <- L.use circuitMasters
 
-  -- Construction of the circuit expression
-  let decs = lets <> map (noLoc . decFromBinding dflags) binds
+  -- Construction of the circuit expression.
+  -- Locate each generated binding at its circuit expression so that type
+  -- errors on a bus are reported on the offending statement rather than at
+  -- the end of the circuit block (see tests/fixtures/BusError.hs).
+  let decFromBinding' b@Binding{bCircuit = L cloc _} = L cloc (decFromBinding dflags b)
+  let decs = lets <> map decFromBinding' binds
 
   let pats = bindOutputs dflags Fwd masters slaves
       res  = createInputs Bwd slaves masters
