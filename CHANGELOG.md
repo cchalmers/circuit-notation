@@ -12,32 +12,10 @@
   the bus type, which also drives type inference. See the README and
   example/ValueCircuits.hs.
 
-  A block can span several clock domains: the value-level bindings are
-  split into groups connected by shared variables and each group is lifted
-  with its own `fmap`/`bundle`/`unbundle`, so only buses whose values
-  actually meet must share a domain. Sharing a value across domains is
-  rejected by the type checker. Lets that don't touch value land stay at
-  the bus level, so let-bound sub-circuits can be used with `-<`.
-
-  The value markers have distinct semantics: `SignalV x` asserts the
-  bus is a `Signal` (best inference — it works against fully generic
-  sub-circuits); `FwdV x` samples/drives the forward channel of any
-  signal-like bus via the new `SignalBus` class (`Signal`s, `Vec`s and
-  tuples of them, custom buses) but needs the bus type determined by
-  context; and `DSignalV x` is `SignalV` for delayed signals — the delay
-  index is part of the bus type, so a logic group's values must all sit at
-  the same pipeline depth, and its outputs are produced at that depth.
-  Mixing plain and delayed markers in one group is reported by the plugin.
-
-  The value boundary is generated with the new `SigTag`, `FwdTag` and
-  `DSigTag` pattern synonyms (`Circuit` module); `SigTag`/`DSigTag` pin the
-  bus type so that type inference survives nested circuits (the `Fwd`
-  family is not injective) and "too shallow" `SignalV` markers report a
-  direct `Vec`-vs-`Signal` style mismatch. **Breaking**: `ExternalNames`
-  gained `signalTagName`, `fwdTagName` and `dSignalTagName` fields, so
-  custom plugins (e.g. clash-protocols style) need to supply them —
-  `defExternalNames` is now exported so they can be record updates of the
-  defaults.
+  **Breaking**: `ExternalNames` gained `signalTagName`, `fwdTagName` and
+  `dSignalTagName` fields, so custom plugins (e.g. clash-protocols style)
+  need to supply them — `defExternalNames` is now exported so they can be
+  record updates of the defaults.
 * Add a per-GHC `checks` output to the flake, so `nix flake check` (or
   `nix build .#checks.<system>.<ghc>`) builds the package and runs all test
   suites against every supported GHC. The CI nix job now uses it. The
