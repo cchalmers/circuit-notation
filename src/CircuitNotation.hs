@@ -34,6 +34,7 @@ module CircuitNotation
   , mkPlugin
   , thName
   , ExternalNames (..)
+  , defExternalNames
   , Direction(..)
   ) where
 
@@ -41,9 +42,14 @@ module CircuitNotation
 import           Control.Exception
 import qualified Data.Data              as Data
 import           Data.Default
+import           Data.List              (partition, sort, sortOn)
 import           Data.Maybe             (fromMaybe)
 import           System.IO.Unsafe
 import           Data.Typeable
+
+-- containers
+import qualified Data.Map.Strict        as Map
+import qualified Data.Set               as Set
 
 -- ghc
 import qualified Language.Haskell.TH    as TH
@@ -92,7 +98,8 @@ import GHC.Types.Unique.Map.Extra
 #endif
 
 -- clash-prelude
-import Clash.Prelude (Vec((:>), Nil))
+import Clash.Prelude (Vec((:>), Nil), bundle, unbundle)
+import qualified Clash.Signal.Delayed.Bundle as DBundle
 
 -- lens
 import qualified Control.Lens           as L
@@ -211,14 +218,54 @@ data PortName = PortName SrcSpanAnnA GHC.FastString
 instance Show PortName where
   show (PortName _ fs) = GHC.unpackFS fs
 
+-- | Which keyword marked a port.
+--
+-- The bus-level markers bind/inject the raw forward channel: @Fwd@ works on
+-- any bus, while @Signal@ and @DSignal@ additionally /enforce/ (via the
+-- concrete @SigTag@/@DSigTag@, which also drives type inference) that the
+-- bus is a 'Signal' or @DSignal@ respectively.
+--
+-- The @...V@ markers mark the /value/ boundary, binding or injecting the
+-- per-cycle value: @SignalV@ and @DSignalV@ assert the bus type like their
+-- bus-level counterparts, while @FwdV@ samples the forward channel of any
+-- signal-like bus (generating the class-constrained @FwdTag@, which
+-- requires the bus type to be determined by context).
+data SigMarker
+  = SignalMarker | FwdMarker | DSignalMarker
+  | SignalVMarker | FwdVMarker | DSignalVMarker
+
+-- | Is this marker a value boundary (@SignalV@/@FwdV@/@DSignalV@)?
+isValueMarker :: SigMarker -> Bool
+isValueMarker = \case
+  SignalVMarker  -> True
+  FwdVMarker     -> True
+  DSignalVMarker -> True
+  _              -> False
+
+-- | Value groups come in two flavors, lifted with the matching bundle:
+-- plain signal values (@SignalV@/@FwdV@) and delayed signal values
+-- (@DSignalV@). The flavors cannot meet in one group.
+data GroupFlavor = SignalGroup | DSignalGroup deriving Eq
+
+valueMarkerFlavor :: SigMarker -> GroupFlavor
+valueMarkerFlavor = \case
+  DSignalVMarker -> DSignalGroup
+  _              -> SignalGroup
+
 data PortDescription a
     = Tuple [PortDescription a]
     | Vec SrcSpanAnnA [PortDescription a]
     | Ref a
     | RefMulticast a
     | Lazy SrcSpanAnnA (PortDescription a)
-    | FwdExpr (LHsExpr GhcPs)
-    | FwdPat (LPat GhcPs)
+    | FwdExpr SigMarker (LHsExpr GhcPs)
+    | FwdPat SigMarker (LPat GhcPs)
+    | SigTagExpr SigMarker (LHsExpr GhcPs)
+    -- ^ generated for value markers: a value-boundary bus expression, tagged
+    -- with @SigTag@/@FwdTag@ according to the marker
+    | SigTagPat SigMarker (LPat GhcPs)
+    -- ^ generated for value markers: a value-boundary bus pattern, tagged with
+    -- @SigTag@/@FwdTag@ according to the marker
     | PortType (LHsType GhcPs) (PortDescription a)
     | PortErr SrcSpanAnnA MsgDoc
     deriving (Foldable, Functor, Traversable)
@@ -255,6 +302,8 @@ data CircuitState dec exp nm = CircuitState
     -- ^ type signatures in let bindings
     , _circuitLets    :: [dec]
     -- ^ user defined let expression inside the circuit
+    , _circuitCompletes :: [dec]
+    -- ^ generated bindings that complete underscored ports
     , _circuitBinds   :: [Binding exp nm]
     -- ^ @out <- circuit <- in@ statements
     , _circuitMasters :: PortDescription nm
@@ -288,6 +337,7 @@ runCircuitM (CircuitM m) = do
         , _circuitSlaves = Tuple []
         , _circuitTypes = []
         , _circuitLets = []
+        , _circuitCompletes = []
         , _circuitBinds = []
         , _circuitMasters = Tuple []
         , _portVarTypes = emptyUniqMap
@@ -331,9 +381,9 @@ noLoc :: e -> GenLocated (SrcAnn ann) e
 noLoc = noEpAnn . GHC.noLoc
 #endif
 
-tupP :: p ~ GhcPs => [LPat p] -> LPat p
-tupP [pat] = pat
-tupP pats = noLoc $ TuplePat noExt pats GHC.Boxed
+tupP :: p ~ GhcPs => SrcSpanAnnA -> [LPat p] -> LPat p
+tupP _ [pat] = pat
+tupP loc pats = L loc $ TuplePat noExt pats GHC.Boxed
 
 vecP :: (?nms :: ExternalNames) => SrcSpanAnnA -> [LPat GhcPs] -> LPat GhcPs
 vecP srcLoc = \case
@@ -650,7 +700,7 @@ bindSlave (L loc expr) = case expr of
   TuplePat _ lpat _ -> Tuple $ fmap bindSlave lpat
   ParPatP lpat -> bindSlave lpat
   ConPat _ (L _ (GHC.Unqual occ)) (PrefixCon [] [lpat])
-    | OccName.occNameString occ `elem` fwdNames -> FwdPat lpat
+    | Just mk <- markerFromName occ -> FwdPat mk lpat
   -- empty list is done as the constructor
   ConPat _ (L _ rdr) _
     | rdr == thName '[] -> Vec loc []
@@ -674,7 +724,7 @@ bindMaster (L loc expr) = case expr of
     | rdrName == thName '[] -> Vec loc [] -- XXX: vloc?
     | otherwise -> Ref (PortName loc (fromRdrName rdrName)) -- XXX: vloc?
   HsApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig
-    | OccName.occNameString occ `elem` fwdNames -> FwdExpr sig
+    | Just mk <- markerFromName occ -> FwdExpr mk sig
   ExplicitTuple _ tups _ -> let
     vals = fmap (\(Present _ e) -> e) tups
     in Tuple $ fmap bindMaster vals
@@ -682,7 +732,7 @@ bindMaster (L loc expr) = case expr of
     Vec loc $ fmap bindMaster exprs
   -- XXX: Untested?
   HsProc _ _ (L _ (HsCmdTop _ (L _ (HsCmdArrApp _xapp (L _ (HsVar _ (L _ (GHC.Unqual occ)))) sig _ _))))
-    | OccName.occNameString occ `elem` fwdNames -> FwdExpr sig
+    | Just mk <- markerFromName occ -> FwdExpr mk sig
   ExprWithTySig _ expr' ty -> PortType (hsSigWcType ty) (bindMaster expr')
 
   HsParP expr' -> bindMaster expr'
@@ -773,10 +823,30 @@ checkCircuit = do
 
 data Direction = Fwd | Bwd deriving Show
 
+-- | Best-effort source span of a port description: the combination of the
+-- spans of everything in it. Generated tuple patterns and expressions take
+-- this span so that type errors on a whole bus (e.g. a clock domain
+-- mismatch between the ports of one bundle) point at the offending ports
+-- rather than at the head of the @circuit@ block.
+portDescLoc :: PortDescription PortName -> SrcSpan
+portDescLoc = \case
+  Tuple ps -> foldr (combineSrcSpans . portDescLoc) noSrcSpan ps
+  Vec s _ -> locA s
+  Ref (PortName s _) -> locA s
+  RefMulticast (PortName s _) -> locA s
+  Lazy s _ -> locA s
+  FwdExpr _ (L s _) -> locA s
+  FwdPat _ (L s _) -> locA s
+  SigTagExpr _ (L s _) -> locA s
+  SigTagPat _ (L s _) -> locA s
+  PortType _ p -> portDescLoc p
+  PortErr s _ -> locA s
+
 bindWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => GHC.DynFlags -> Direction -> PortDescription PortName -> LPat p
 bindWithSuffix dflags dir = \case
-  Tuple ps -> tildeP noSrcSpanA $ taggedBundleP $ tupP $ fmap (bindWithSuffix dflags dir) ps
-  Vec s ps -> taggedBundleP $ vecP s $ fmap (bindWithSuffix dflags dir) ps
+  p@(Tuple ps) -> let loc = noAnnSrcSpan (portDescLoc p)
+    in tildeP loc $ taggedBundleP loc $ tupP loc $ fmap (bindWithSuffix dflags dir) ps
+  Vec s ps -> taggedBundleP s $ vecP s $ fmap (bindWithSuffix dflags dir) ps
   Ref (PortName loc fs) -> varP loc (GHC.unpackFS fs <> "_" <> show dir)
   RefMulticast (PortName loc fs) -> case dir of
     Bwd -> L loc (WildPat noExtField)
@@ -785,8 +855,10 @@ bindWithSuffix dflags dir = \case
     mkLongErrMsg dflags (locA loc) Outputable.alwaysQualify (Outputable.text "Unhandled bind") msgdoc
   Lazy loc p -> tildeP loc $ bindWithSuffix dflags dir p
   -- XXX: propagate location
-  FwdExpr (L _ _) -> nlWildPat
-  FwdPat lpat -> tagP lpat
+  FwdExpr _ (L _ _) -> nlWildPat
+  FwdPat mk lpat -> sigTagP mk lpat
+  SigTagExpr _ (L _ _) -> nlWildPat
+  SigTagPat mk lpat -> sigTagP mk lpat
   PortType ty p -> tagTypeP dir ty $ bindWithSuffix dflags dir p
 
 revDirec :: Direction -> Direction
@@ -810,8 +882,9 @@ bindOutputs dflags direc slaves masters = noLoc $ conPatIn (noLoc (fwdBwdCon ?nm
 
 expWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => Direction -> PortDescription PortName -> LHsExpr p
 expWithSuffix dir = \case
-  Tuple ps -> taggedBundleE $ tupE noSrcSpanA $ fmap (expWithSuffix dir) ps
-  Vec s ps -> taggedBundleE $ vecE s $ fmap (expWithSuffix dir) ps
+  p@(Tuple ps) -> let loc = noAnnSrcSpan (portDescLoc p)
+    in taggedBundleE loc $ tupE loc $ fmap (expWithSuffix dir) ps
+  Vec s ps -> taggedBundleE s $ vecE s $ fmap (expWithSuffix dir) ps
   Ref (PortName loc fs)   -> varE loc (var $ GHC.unpackFS fs <> "_" <> show dir)
   RefMulticast (PortName loc fs) -> case dir of
     Bwd -> varE noSrcSpanA (trivialBwd ?nms)
@@ -819,8 +892,12 @@ expWithSuffix dir = \case
   -- laziness only affects the pattern side
   Lazy _ p   -> expWithSuffix dir p
   PortErr _ _ -> error "expWithSuffix PortErr!"
-  FwdExpr lexpr -> tagE lexpr
-  FwdPat (L l _) -> tagE $ varE l (trivialBwd ?nms)
+  FwdExpr mk lexpr -> sigTagE mk lexpr
+  FwdPat _ (L l _) -> tagE $ varE l (trivialBwd ?nms)
+  SigTagExpr mk lexpr -> sigTagE mk lexpr
+  -- the backwards channel of a signal bus is trivial, so a plain (untyped)
+  -- tag suffices; the forwards occurrence pins the bus type
+  SigTagPat _ (L l _) -> tagE $ varE l (trivialBwd ?nms)
   PortType ty p -> tagTypeE dir ty (expWithSuffix dir p)
 
 createInputs
@@ -874,17 +951,37 @@ runCircuitFun loc = varE loc (runCircuitName ?nms)
 prefixCon :: [arg] -> HsConDetails tyarg arg rec
 prefixCon a = PrefixCon [] a
 
-taggedBundleP :: (p ~ GhcPs, ?nms :: ExternalNames) => LPat p -> LPat p
-taggedBundleP a = noLoc (conPatIn (noLoc (tagBundlePat ?nms)) (prefixCon [a]))
+taggedBundleP :: (p ~ GhcPs, ?nms :: ExternalNames) => SrcSpanAnnA -> LPat p -> LPat p
+taggedBundleP loc a = L loc (conPatIn (noLoc (tagBundlePat ?nms)) (prefixCon [a]))
 
-taggedBundleE :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsExpr p -> LHsExpr p
-taggedBundleE a = varE noSrcSpanA (tagBundlePat ?nms) `appE` a
+taggedBundleE :: (p ~ GhcPs, ?nms :: ExternalNames) => SrcSpanAnnA -> LHsExpr p -> LHsExpr p
+taggedBundleE loc a = varE loc (tagBundlePat ?nms) `appE` a
 
 tagP :: (p ~ GhcPs, ?nms :: ExternalNames) => LPat p -> LPat p
 tagP a = noLoc (conPatIn (noLoc (tagName ?nms)) (prefixCon [a]))
 
 tagE :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsExpr p -> LHsExpr p
 tagE a = varE noSrcSpanA (tagName ?nms) `appE` a
+
+-- the SigTag wrappers take the location of what they wrap so that type
+-- errors on the value boundary (e.g. marking a non-signal bus with @Signal@)
+-- point at the marked pattern or expression
+sigTagP :: (p ~ GhcPs, ?nms :: ExternalNames) => SigMarker -> LPat p -> LPat p
+sigTagP mk a@(L l _) = L l (conPatIn (noLoc (markerTagName mk)) (prefixCon [a]))
+
+sigTagE :: (p ~ GhcPs, ?nms :: ExternalNames) => SigMarker -> LHsExpr p -> LHsExpr p
+sigTagE mk a@(L l _) = varE l (markerTagName mk) `appE` a
+
+-- | The tag wrapped around a marked port: plain 'BusTag' for the generic
+-- bus-level @Fwd@, the type-enforcing tags for everything else.
+markerTagName :: (?nms :: ExternalNames) => SigMarker -> GHC.RdrName
+markerTagName = \case
+  FwdMarker      -> tagName ?nms
+  SignalMarker   -> signalTagName ?nms
+  DSignalMarker  -> dSignalTagName ?nms
+  SignalVMarker  -> signalTagName ?nms
+  FwdVMarker     -> fwdTagName ?nms
+  DSignalVMarker -> dSignalTagName ?nms
 
 tagTypeCon :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsType GhcPs
 tagTypeCon =
@@ -967,15 +1064,16 @@ tyEq a b =
 
 -- Final construction --------------------------------------------------
 
-circuitQQExpM
+busCircuitQQExpM
   :: (p ~ GhcPs, ?nms :: ExternalNames)
   => CircuitM (LHsExpr p)
-circuitQQExpM = do
+busCircuitQQExpM = do
   checkCircuit
 
   dflags <- GHC.getDynFlags
   binds <- L.use circuitBinds
   lets <- L.use circuitLets
+  completes <- L.use circuitCompletes
   letTypes <- L.use circuitTypes
   slaves <- L.use circuitSlaves
   masters <- L.use circuitMasters
@@ -985,7 +1083,7 @@ circuitQQExpM = do
   -- errors on a bus are reported on the offending statement rather than at
   -- the end of the circuit block (see tests/fixtures/BusError.hs).
   let decFromBinding' b@Binding{bCircuit = L cloc _} = L cloc (decFromBinding dflags b)
-  let decs = lets <> map decFromBinding' binds
+  let decs = lets <> completes <> map decFromBinding' binds
 
   let pats = bindOutputs dflags Fwd masters slaves
       res  = createInputs Bwd slaves masters
@@ -1000,6 +1098,316 @@ circuitQQExpM = do
   mapM_ gatherTypes [masters, slaves]
 
   pure $ circuitConstructor noSrcSpanA `appE` lamE [pats] body
+
+-- Value-level ports (SignalV/FwdV markers) ----------------------------
+
+-- | The number of value-level (@SignalV@/@FwdV@-marked) ports in a port
+-- description.
+countValuePorts :: PortDescription PortName -> Int
+countValuePorts p =
+  length [() | FwdPat mk _ <- L.universe p, isValueMarker mk] +
+  length [() | FwdExpr mk _ <- L.universe p, isValueMarker mk]
+
+-- | Replace each value-level ('Signal' / 'Fwd') pattern with a reference to a
+-- generated signal bus variable (@prefix <> show i@), collecting the original
+-- value-level patterns in order.
+replaceFwdPats
+  :: String
+  -> PortDescription PortName
+  -> State (Int, [(SigMarker, LPat GhcPs)]) (PortDescription PortName)
+replaceFwdPats prefix = L.transformM \case
+  FwdPat mk lpat@(L loc _) | isValueMarker mk -> do
+    (i, pats) <- get
+    put (i + 1, pats <> [(mk, lpat)])
+    pure (SigTagPat mk (varP loc (prefix <> show i)))
+  p -> pure p
+
+-- | Replace each value-level ('Signal' / 'Fwd') expression with a reference
+-- to a generated signal bus variable (@prefix <> show i@), collecting the
+-- original value-level expressions in order.
+replaceFwdExprs
+  :: String
+  -> PortDescription PortName
+  -> State (Int, [(SigMarker, LHsExpr GhcPs)]) (PortDescription PortName)
+replaceFwdExprs prefix = L.transformM \case
+  FwdExpr mk lexpr@(L loc _) | isValueMarker mk -> do
+    (i, exprs) <- get
+    put (i + 1, exprs <> [(mk, lexpr)])
+    pure (SigTagExpr mk (varE loc (var (prefix <> show i))))
+  p -> pure p
+
+-- | The value-aware entry point for @circuit@ blocks.
+--
+-- Value-level ports describe a circuit's logic over the values sampled
+-- each clock cycle. The boundary between bus land and value land is marked
+-- with @SignalV@ (or @FwdV@): @SignalV n <- ...@ binds @n@ to the per-cycle
+-- value carried on that bus, and @... -< SignalV e@ injects the per-cycle
+-- value @e@ back onto a bus.
+--
+-- All the value-level bindings (the @let@s of the do block) are collected
+-- into a single pure function, @circuitLogic@, whose arguments are the
+-- @Signal@-bound values and whose results are the @Signal@-injected
+-- expressions. It is lifted to the signal level with 'fmap', using
+-- 'bundle' / 'unbundle' and a lazy let binding to tie feedback loops:
+--
+-- @
+-- circuitLogic = \\(ins) -> let \<user lets\> in (outs)
+-- (outBuses) = unbundle (fmap circuitLogic (bundle (inBuses)))
+-- @
+--
+-- The buses themselves are wired up exactly as for an ordinary @circuit@.
+circuitQQExpM
+  :: (p ~ GhcPs, ?nms :: ExternalNames)
+  => CircuitM (LHsExpr p)
+circuitQQExpM = do
+  slaves0 <- L.use circuitSlaves
+  masters0 <- L.use circuitMasters
+  binds0 <- L.use circuitBinds
+
+  let boundaryCount =
+        sum (map countValuePorts (slaves0 : masters0 : concatMap (\b -> [bIn b, bOut b]) binds0))
+
+  -- Without any value-level (SignalV/FwdV) ports there is no boundary to
+  -- lift; generate plain bus plumbing.
+  if boundaryCount == 0 then busCircuitQQExpM else valueCircuitQQExpM
+
+valueCircuitQQExpM
+  :: (p ~ GhcPs, ?nms :: ExternalNames)
+  => CircuitM (LHsExpr p)
+valueCircuitQQExpM = do
+  checkCircuit
+
+  dflags <- GHC.getDynFlags
+  loc <- L.use circuitLoc
+
+  -- read the ports after checkCircuit, which may have rewritten them
+  slaves0 <- L.use circuitSlaves
+  masters0 <- L.use circuitMasters
+  binds0 <- L.use circuitBinds
+
+  let inPrefix  = genLocName loc "valIn" <> "_"
+      outPrefix = genLocName loc "valOut" <> "_"
+      logicName = genLocName loc "circuitLogic"
+
+  -- Value patterns become the arguments of circuitLogic (values sampled off
+  -- buses) ...
+  let inM = do
+        s <- replaceFwdPats inPrefix slaves0
+        bs <- traverse (\b -> (\p -> b { bIn = p }) <$> replaceFwdPats inPrefix (bIn b)) binds0
+        pure (s, bs)
+      ((slaves1, binds1), (numIns, inPats)) = runState inM (0, [])
+
+  -- ... and value expressions become its results (values written to buses).
+  let outM = do
+        bs <- traverse (\b -> (\p -> b { bOut = p }) <$> replaceFwdExprs outPrefix (bOut b)) binds1
+        m <- replaceFwdExprs outPrefix masters0
+        pure (bs, m)
+      ((binds2, masters1), (numOuts, outExprs)) = runState outM (0, [])
+
+  circuitSlaves .= slaves1
+  circuitMasters .= masters1
+  circuitBinds .= binds2
+
+  -- In a value circuit the do-block lets are value-level; they form the
+  -- bodies of the generated logic functions rather than ending up in the
+  -- outer (bus-level) let -- except for lets that don't touch any
+  -- value-level variable, which stay in the outer let (so e.g. a let-bound
+  -- sub-circuit can still be used with @-<@).
+  lets <- L.use circuitLets
+  completes <- L.use circuitCompletes
+  letTypes <- L.use circuitTypes
+
+  -- see [value-components]
+  let valueNames = Set.fromList (concatMap (patVarNames . snd) inPats <> concatMap bindDefinedNames lets)
+      valueFvs :: SYB.Data a => a -> Set.Set String
+      valueFvs a = Set.intersection (freeVarNames a) valueNames
+
+      items =
+        [ (ItemIn i, Set.fromList (patVarNames p)) | (i, (_, p)) <- zip [0 ..] inPats ] <>
+        [ (ItemOut k, valueFvs e) | (k, (_, e)) <- zip [0 ..] outExprs ] <>
+        [ (ItemLet j, Set.fromList (bindDefinedNames b) `Set.union` valueFvs b)
+        | (j, b) <- zip [0 ..] lets ]
+
+      itemSeq = \case
+        ItemIn i  -> i
+        ItemOut k -> numIns + k
+        ItemLet j -> numIns + numOuts + j
+      isBoundary = \case ItemLet{} -> False; _ -> True
+
+      groups = sortOn (minimum . map itemSeq . fst) (groupComponents items)
+      (innerGroups, outerGroups) = partition (any isBoundary . fst) groups
+
+      -- lets disconnected from the value boundary stay in the outer let
+      outerLets = [ lets !! j | (its, _) <- outerGroups, ItemLet j <- its ]
+
+      -- assign user type signatures to the group that binds their name,
+      -- splitting multi-name signatures if necessary
+      nameComp = Map.fromList
+        [ (n, ci) | (ci, (_, ns)) <- zip [0 :: Int ..] innerGroups, n <- Set.toList ns ]
+      sigComp (L _ rdr) = case unqualName rdr of
+        [n] -> Map.lookup n nameComp
+        _   -> Nothing
+      splitSigs = concatMap
+        (\lsig@(L l s) -> case s of
+            TypeSig x ids ty ->
+              [ (c, L l (TypeSig x ids' ty))
+              | (c, ids') <- Map.toList (Map.fromListWith (flip (<>)) [ (sigComp i, [i]) | i <- ids ]) ]
+            _ -> [(Nothing, lsig)])
+        letTypes
+      sigsForComp ci = [ s | (Just ci', s) <- splitSigs, ci' == ci ]
+      outerSigs = [ s | (Nothing, s) <- splitSigs ]
+
+  -- Each group is lifted with the bundle matching its markers' flavor;
+  -- plain (SignalV/FwdV) and delayed (DSignalV) values cannot meet in one
+  -- group, since neither bundle accepts both bus kinds.
+  flavors <- forM innerGroups \(its, _) -> do
+    let mks = [ (fst (inPats !! i), getLoc (snd (inPats !! i))) | ItemIn i <- its ]
+           <> [ (fst (outExprs !! k), getLoc (snd (outExprs !! k))) | ItemOut k <- its ]
+        dLocs = [ l | (mk, l) <- mks, valueMarkerFlavor mk == DSignalGroup ]
+        sLocs = [ l | (mk, l) <- mks, valueMarkerFlavor mk == SignalGroup ]
+    case (dLocs, sLocs) of
+      (dl : _, _ : _) -> do
+        errM (locA dl) $
+          "This value group mixes DSignalV with SignalV/FwdV markers. "
+          <> "Delayed and undelayed values cannot meet in one logic group; "
+          <> "convert between Signal and DSignal explicitly at the bus level "
+          <> "instead."
+        pure DSignalGroup
+      (_ : _, []) -> pure DSignalGroup
+      _           -> pure SignalGroup
+
+      -- One logic function and one lifted knot binding per group:
+      --   circuitLogic_cN = \(ins) -> let <lets> in (outs)
+      --   (outBuses) = unbundle (fmap circuitLogic_cN (bundle (inBuses)))
+      -- bundle/unbundle are only needed when there is more than one bus, and
+      -- with no inputs at all the logic is constant, so it is mapped over
+      -- @pure ()@. The generated bundle elements and knot patterns take the
+      -- source locations of the original markers, so clock domain (and
+      -- delay) mismatches are reported on the offending marker. Groups with
+      -- no outputs produce no value (their logic would be dead) and generate
+      -- nothing.
+  let mkComp ci flavor (its, _) =
+        let ins  = sort [ i | ItemIn i <- its ]
+            outs = sort [ k | ItemOut k <- its ]
+            ls   = sort [ j | ItemLet j <- its ]
+            (bundleNm, unbundleNm) = case flavor of
+              SignalGroup  -> (thName 'bundle, thName 'unbundle)
+              DSignalGroup -> (thName 'DBundle.bundle, thName 'DBundle.unbundle)
+            logicNm = logicName <> "_c" <> show ci
+            -- A leading lazy unit keeps every real input out of 'bundle's
+            -- spine-forcing head slot ('bundle' lifts its first element with
+            -- 'fmap' / 'mapSignal#', which forces that element's spine), so
+            -- combinational feedback between value groups does not deadlock
+            -- simulation.
+            pureUnitE = varE noSrcSpanA (thName 'pure) `appE` tupE noSrcSpanA []
+            -- Each value-input pattern is matched lazily (irrefutable), as the
+            -- bus-level plumbing already is. A strict value pattern (e.g. a
+            -- constructor pattern that destructures the sampled value at the
+            -- boundary) would force its input to produce ANY of the group's
+            -- outputs -- even outputs that don't use it -- which deadlocks when
+            -- that input depends, through the circuit, on such an output.
+            logicPat = case ins of
+              [] -> tupP noSrcSpanA []
+              _  -> tupP noSrcSpanA (L noSrcSpanA (WildPat noExtField) : map (tildeP noSrcSpanA . snd . (inPats !!)) ins)
+            logicLam = lamE [logicPat]
+              (letE noSrcSpanA (sigsForComp ci) (map (lets !!) ls)
+                    (tupE noSrcSpanA (map (snd . (outExprs !!)) outs)))
+            logicBind = L loc $ patBind (varP noSrcSpanA logicNm) logicLam
+
+            inVars = map (\i -> let (L l _) = snd (inPats !! i) in varE l (var (inPrefix <> show i))) ins
+            outVarPs = map (\k -> let (L l _) = snd (outExprs !! k) in varP l (outPrefix <> show k)) outs
+
+            bundled = case inVars of
+              [] -> pureUnitE
+              es -> varE noSrcSpanA bundleNm `appE` tupE noSrcSpanA (pureUnitE : es)
+            lifted = varE noSrcSpanA (thName 'fmap) `appE` varE noSrcSpanA (var logicNm) `appE` bundled
+            knotExpr = if length outs > 1
+              then varE noSrcSpanA unbundleNm `appE` lifted
+              else lifted
+            outsLoc = noAnnSrcSpan (foldr (combineSrcSpans . getLocA) noSrcSpan outVarPs)
+            knotBind = L loc $ patBind (tupP outsLoc outVarPs) knotExpr
+        in if null outs then [] else [logicBind, knotBind]
+
+      compDecs = concat (zipWith3 mkComp [0 ..] flavors innerGroups)
+
+  -- The bus plumbing is generated exactly as in 'busCircuitQQExpM'.
+  let decFromBinding' b@Binding{bCircuit = L cloc _} = L cloc (decFromBinding dflags b)
+  let decs = compDecs <> outerLets <> completes <> map decFromBinding' binds2
+
+  let pats = bindOutputs dflags Fwd masters1 slaves1
+      res  = createInputs Bwd slaves1 masters1
+
+      body :: LHsExpr GhcPs
+      body = letE noSrcSpanA outerSigs decs res
+
+  pure $ circuitConstructor noSrcSpanA `appE` lamE [pats] body
+
+-- [value-components]
+-- The value-level bindings of a @circuit@ block are split into the
+-- connected components of their shared-variable graph before lifting: an
+-- input variable (Signal pattern), output expression (Signal expression) or
+-- let binding belongs to the same group as anything it shares a value-level
+-- variable with. Each group is lifted with its own fmap/bundle/unbundle, so
+-- only buses whose values actually meet are bundled -- which is what allows
+-- a single circuit block to span several clock domains: per-cycle values
+-- may only meet if their buses are synchronous, and 'bundle' enforces
+-- exactly that per group. Sharing a variable across domains is an
+-- (unsynchronized) clock domain crossing and is rejected by the type
+-- checker; crossing domains must be done with explicit bus-level
+-- synchronizer circuits.
+--
+-- The analysis is purely syntactic and conservative: free variables are
+-- over-approximated by all unqualified variable occurrences (no scope
+-- tracking), so shadowing can only ever merge groups that strictly wouldn't
+-- need merging (a false same-domain constraint), never split things that
+-- belong together.
+
+-- | An occurrence of the value boundary (or a let between boundaries) in a
+-- @circuit@ block; the @Int@ indexes into the respective collection.
+data ValueItem = ItemIn Int | ItemOut Int | ItemLet Int
+
+-- | Group items into connected components: items (transitively) sharing a
+-- name end up in the same group.
+groupComponents :: [(ValueItem, Set.Set String)] -> [([ValueItem], Set.Set String)]
+groupComponents = foldl step []
+  where
+    step groups (it, ns) =
+      let (touching, rest) = partition (\(_, gns) -> not (Set.disjoint ns gns)) groups
+      in (concatMap fst touching <> [it], Set.unions (ns : map snd touching)) : rest
+
+unqualName :: GHC.RdrName -> [String]
+unqualName = \case
+  GHC.Unqual occ -> [OccName.occNameString occ]
+  _ -> []
+
+-- | Variable names bound by a pattern (conservative, syntactic; as-pattern
+-- names are not collected).
+patVarNames :: LPat GhcPs -> [String]
+patVarNames = SYB.everything (<>) (SYB.mkQ [] q)
+  where
+    q :: Pat GhcPs -> [String]
+    q = \case
+      VarPat _ (L _ rdr) -> unqualName rdr
+      _ -> []
+
+-- | All unqualified variable occurrences: a conservative over-approximation
+-- of the free variables (bound variables of nested lambdas/lets/cases are
+-- included).
+freeVarNames :: SYB.Data a => a -> Set.Set String
+freeVarNames = Set.fromList . SYB.everything (<>) (SYB.mkQ [] q)
+  where
+    q :: HsExpr GhcPs -> [String]
+    q = \case
+      HsVar _ (L _ rdr) -> unqualName rdr
+      _ -> []
+
+-- | The names a let binding defines.
+bindDefinedNames :: LHsBind GhcPs -> [String]
+bindDefinedNames (L _ b) = case b of
+  FunBind { fun_id = L _ rdr } -> unqualName rdr
+  PatBind { pat_lhs = lpat } -> patVarNames lpat
+  VarBind { var_id = rdr } -> unqualName rdr
+  _ -> []
 
 grr :: MonadIO m => OccName.NameSpace -> m ()
 grr nm
@@ -1020,7 +1428,7 @@ completeUnderscores = do
       addDef suffix = \case
         Ref (PortName loc (unpackFS -> name@('_':_))) -> do
           let bind = patBind (varP loc (name <> suffix)) (tagE $ varE loc (thName 'def))
-          circuitLets <>= [L loc bind]
+          circuitCompletes <>= [L loc bind]
 
         _ -> pure ()
       addBind :: Binding exp PortName -> CircuitM ()
@@ -1128,8 +1536,16 @@ showC a = show (typeOf a) <> " " <> show (Data.toConstr a)
 
 -- Names ---------------------------------------------------------------
 
-fwdNames :: [String]
-fwdNames = ["Fwd", "Signal"]
+-- | Recognise the port marker keywords (see 'SigMarker').
+markerFromName :: OccName.OccName -> Maybe SigMarker
+markerFromName occ = case OccName.occNameString occ of
+  "Signal"   -> Just SignalMarker
+  "Fwd"      -> Just FwdMarker
+  "DSignal"  -> Just DSignalMarker
+  "SignalV"  -> Just SignalVMarker
+  "FwdV"     -> Just FwdVMarker
+  "DSignalV" -> Just DSignalVMarker
+  _          -> Nothing
 
 -- | Collection of names external to circuit-notation.
 data ExternalNames = ExternalNames
@@ -1137,6 +1553,15 @@ data ExternalNames = ExternalNames
   , runCircuitName :: GHC.RdrName
   , tagBundlePat :: GHC.RdrName
   , tagName :: GHC.RdrName
+  , signalTagName :: GHC.RdrName
+  -- ^ a (pattern synonym) variant of 'tagName' whose type pins the bus to be
+  -- a signal; used for @Signal@ markers at the value boundary of @circuitV@
+  -- blocks
+  , fwdTagName :: GHC.RdrName
+  -- ^ like 'signalTagName' but class-constrained, accepting any signal-like
+  -- bus; used for @FwdV@ markers at the value boundary of @circuit@ blocks
+  , dSignalTagName :: GHC.RdrName
+  -- ^ like 'signalTagName' for delayed signals; used for @DSignalV@ markers
   , tagTName :: GHC.RdrName
   , fwdBwdCon :: GHC.RdrName
   , fwdAndBwdTypes :: Direction -> GHC.RdrName
@@ -1144,12 +1569,20 @@ data ExternalNames = ExternalNames
   , consPat :: GHC.RdrName
   }
 
+-- | The names used by the plugin by default, referring to the @Circuit@
+-- module of this package. Custom plugins are encouraged to build their
+-- names as a record update of this, so that newly added fields (which
+-- happens when the notation grows new features) default to something
+-- sensible.
 defExternalNames :: ExternalNames
 defExternalNames = ExternalNames
   { circuitCon = GHC.Unqual (OccName.mkDataOcc "TagCircuit")
   , runCircuitName = GHC.Unqual (OccName.mkVarOcc "runTagCircuit")
   , tagBundlePat = GHC.Unqual (OccName.mkDataOcc "BusTagBundle")
   , tagName = GHC.Unqual (OccName.mkDataOcc "BusTag")
+  , signalTagName = GHC.Unqual (OccName.mkDataOcc "SigTag")
+  , fwdTagName = GHC.Unqual (OccName.mkDataOcc "FwdTag")
+  , dSignalTagName = GHC.Unqual (OccName.mkDataOcc "DSigTag")
   , tagTName = GHC.Unqual (OccName.mkTcOcc "BusTag")
   , fwdBwdCon = GHC.Unqual (OccName.mkDataOcc ":->")
   , fwdAndBwdTypes = \case

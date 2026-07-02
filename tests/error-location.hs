@@ -1,17 +1,21 @@
--- | Regression test for the source locations of type errors on buses.
+-- | Regression tests for the source locations of error messages.
 --
 -- When bus tagging (the @BusTag@ wrapping) was introduced, type errors on a
 -- bus stopped pointing at the offending statement and instead pointed at the
--- end of the @circuit@ block, which made them very hard to act on.
+-- end of the @circuit@ block, which made them very hard to act on. The same
+-- concern applies to @circuitV@ blocks, where the value-level expressions and
+-- lets are moved into a generated @circuitLogic@ function.
 --
--- This test compiles 'tests/fixtures/BusError.hs' (which has a deliberate type
--- error on a bus, on the line marked @ERROR HERE@) with plugin enabled and
--- asserts that GHC reports an error /on that line/. It uses the same plain
--- @ghc@ + package-environment-file mechanism that CI already uses to compile
--- the @Example@ module.
+-- Each fixture in 'fixtures' deliberately fails to compile, with the
+-- offending statement tagged by a marker comment that appears on exactly one
+-- line. The fixture is compiled with the plugin enabled and we assert that an
+-- error is reported /on that line/ (and, optionally, that the output contains
+-- an expected message). It uses the same plain @ghc@ +
+-- package-environment-file mechanism that CI already uses to compile the
+-- @Example@ module.
 module Main (main) where
 
-import           Control.Monad      (unless, when)
+import           Control.Monad      (forM, unless, when)
 import           Data.List          (isInfixOf, isPrefixOf, nub, sort)
 import           Data.Maybe         (mapMaybe)
 import           System.Directory   (getTemporaryDirectory)
@@ -21,16 +25,54 @@ import           System.FilePath    ((</>))
 import           System.Process     (readProcessWithExitCode)
 import           Text.Read          (readMaybe)
 
-fixture :: FilePath
-fixture = "tests" </> "fixtures" </> "BusError.hs"
+data Fixture = Fixture
+  { fixturePath   :: FilePath
+  -- ^ the file to compile, which must fail to compile
+  , fixtureMarker :: String
+  -- ^ marker comment on the line the error should be reported on; it must
+  -- appear on exactly one line of the fixture
+  , fixtureNeedle :: Maybe String
+  -- ^ optionally, a string the compiler output must contain
+  }
 
--- | The marker placed on the erroring statement inside the fixture. It is
--- chosen so that it appears on exactly one line of the fixture.
-marker :: String
-marker = "bus-error-marker"
+fixtures :: [Fixture]
+fixtures =
+  [ -- type error on a bus in an ordinary circuit
+    Fixture ("tests" </> "fixtures" </> "BusError.hs") "bus-error-marker" Nothing
+    -- type error on a value-level expression in a circuitV
+  , Fixture ("tests" </> "fixtures" </> "ValueExprError.hs") "value-expr-error-marker" Nothing
+    -- type error inside a value-level let in a circuitV
+  , Fixture ("tests" </> "fixtures" </> "ValueLetError.hs") "value-let-error-marker" Nothing
+    -- port error reported by the plugin itself in a circuitV
+  , Fixture ("tests" </> "fixtures" </> "ValuePortError.hs") "value-port-error-marker"
+      (Just "has no associated master")
+    -- a Signal marker on a bus that is not a signal (the marker is "too
+    -- shallow"); the SigTag the plugin generates should turn this into a
+    -- direct Vec-vs-Signal mismatch on the offending pattern
+  , Fixture ("tests" </> "fixtures" </> "ValueShapeError.hs") "value-shape-error-marker" Nothing
+    -- sharing a value-level variable across two clock domains; the merged
+    -- group's bundle demands one domain, so this must be a domain-mismatch
+    -- type error
+  , Fixture ("tests" </> "fixtures" </> "CrossDomainError.hs") "cross-domain-error-marker"
+      (Just "Couldn't match type")
+    -- sharing a value-level variable between two pipeline depths; the
+    -- merged group's delayed bundle demands one delay index
+  , Fixture ("tests" </> "fixtures" </> "CrossDelayError.hs") "cross-delay-error-marker"
+      (Just "Couldn't match type")
+    -- mixing plain and delayed value markers in one group is reported by
+    -- the plugin itself, at the offending marker
+  , Fixture ("tests" </> "fixtures" </> "MixedMarkerError.hs") "mixed-marker-error-marker"
+      (Just "mixes DSignalV with SignalV/FwdV")
+  ]
 
 main :: IO ()
 main = do
+  ghc <- maybe "ghc" id <$> lookupEnv "GHC"
+  results <- forM fixtures (checkFixture ghc)
+  unless (and results) exitFailure
+
+checkFixture :: String -> Fixture -> IO Bool
+checkFixture ghc (Fixture fixture marker needle) = do
   src <- readFile fixture
 
   -- Work out which line the deliberate error is on by finding the marker.
@@ -42,7 +84,6 @@ main = do
                    <> " in " <> fixture <> ", found lines " <> show markedLines
 
   -- Compile the fixture and collect the reported error lines.
-  ghc <- maybe "ghc" id <$> lookupEnv "GHC"
   tmp <- getTemporaryDirectory
   let args =
         [ "-outputdir", tmp </> "circuit-notation-error-test"
@@ -51,29 +92,37 @@ main = do
         ]
   (_code, out, err) <- readProcessWithExitCode ghc args ""
   let output    = out <> err
-      errLines  = sort . nub $ errorLineNumbers output
+      errLines  = sort . nub $ errorLineNumbers fixture output
 
-  putStrLn $ "ghc reported errors on lines: " <> show errLines
-  putStrLn $ "expected an error on line:    " <> show expectedLine
+  putStrLn $ fixture <> ":"
+  putStrLn $ "  ghc reported errors on lines: " <> show errLines
+  putStrLn $ "  expected an error on line:    " <> show expectedLine
 
   when (null errLines) $
     die $ "expected the fixture to fail to compile, but ghc reported no\n\
           \error locations. Full output:\n" <> output
 
   unless (expectedLine `elem` errLines) $
-    die $ "type error on the bus was not reported on the offending line ("
+    die $ "the error was not reported on the offending line ("
             <> show expectedLine <> ").\n"
             <> "Instead it was reported on lines " <> show errLines
-            <> " -- this is the bus-tagging regression where errors point at\n"
+            <> " -- this is the regression where errors point at\n"
             <> "the end of the circuit rather than the actual mistake.\n\n"
             <> "Full ghc output:\n" <> output
 
-  putStrLn "OK: bus type error points at the offending statement."
+  case needle of
+    Just msg | not (msg `isInfixOf` output) ->
+      die $ "expected the compiler output to mention " <> show msg
+              <> ".\n\nFull ghc output:\n" <> output
+    _ -> pure ()
+
+  putStrLn "  OK: error points at the offending statement."
+  pure True
 
 -- | Extract the line numbers from GHC error messages that refer to the fixture,
 -- e.g. a line @tests/fixtures/BusError.hs:30:8: error: ...@ yields @30@.
-errorLineNumbers :: String -> [Int]
-errorLineNumbers = mapMaybe parseLine . lines
+errorLineNumbers :: FilePath -> String -> [Int]
+errorLineNumbers fixture = mapMaybe parseLine . lines
   where
     parseLine l = do
       let l' = dropWhile (== ' ') l
