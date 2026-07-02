@@ -71,6 +71,16 @@ vecEmitC :: Circuit (Signal dom Int) (Vec 2 (Signal dom Int))
 vecEmitC = circuit \(SignalV a) -> do
   idC -< FwdV (a :> (a + 1) :> Nil)
 
+-- | A whole tuple of signal-like buses sampled as a single tuple of values
+-- per cycle (via the 'SignalBus' instances for tuples, which go up to
+-- 12-tuples).
+tupleSampleC
+  :: Circuit
+       (Signal dom Int, Vec 2 (Signal dom Int), Signal dom Int, Signal dom Int)
+       (Signal dom Int)
+tupleSampleC = circuit \(FwdV (a, v, b, c)) -> do
+  idC -< SignalV (a + sum v + b + c)
+
 -- | @SignalV@ and @FwdV@ markers can meet in the same logic group.
 mixedMarkersC :: Circuit (Signal dom Int, Vec 2 (Signal dom Int)) (Signal dom Int)
 mixedMarkersC = circuit \(SignalV a, FwdV v) -> do

@@ -47,6 +47,13 @@ main = do
                          [11, 22, 33, 44, 55]
     , check "vecEmitC"   (fmap sample5 (simulateC vecEmitC (fromList [0 ..])))
                          ([0, 1, 2, 3, 4] :> [1, 2, 3, 4, 5] :> Nil)
+    , check "tupleSampleC"
+        (sample5 (simulateC tupleSampleC
+          ( fromList [1 ..]
+          , fromList [10, 20 ..] :> fromList [100, 200 ..] :> Nil
+          , fromList [1000, 2000 ..]
+          , fromList [10000, 20000 ..] )))
+        [11111, 22222, 33333, 44444, 55555]
     , check "mixedMarkersC"
         (sample5 (simulateC mixedMarkersC (fromList [100, 200 ..], fromList [1 ..] :> fromList [10, 20 ..] :> Nil)))
         [111, 222, 333, 444, 555]
