@@ -25,7 +25,10 @@
 * Fix the source location of type errors on a bus. Since bus tagging was
   introduced, such errors pointed at the end of the `circuit` block rather than
   at the offending statement. Generated bindings are now located at their
-  circuit expression so GHC blames the right line.
+  circuit expression so GHC blames the right line. Generated bundle patterns
+  and expressions also take the span of the ports they bundle, so
+  whole-bundle errors (e.g. sharing a value-level variable across clock
+  domains) are blamed on the ports rather than on the head of the circuit.
 
 ## 0.2.0.0 -- 2026-04-23
 

@@ -381,9 +381,9 @@ noLoc :: e -> GenLocated (SrcAnn ann) e
 noLoc = noEpAnn . GHC.noLoc
 #endif
 
-tupP :: p ~ GhcPs => [LPat p] -> LPat p
-tupP [pat] = pat
-tupP pats = noLoc $ TuplePat noExt pats GHC.Boxed
+tupP :: p ~ GhcPs => SrcSpanAnnA -> [LPat p] -> LPat p
+tupP _ [pat] = pat
+tupP loc pats = L loc $ TuplePat noExt pats GHC.Boxed
 
 vecP :: (?nms :: ExternalNames) => SrcSpanAnnA -> [LPat GhcPs] -> LPat GhcPs
 vecP srcLoc = \case
@@ -823,10 +823,30 @@ checkCircuit = do
 
 data Direction = Fwd | Bwd deriving Show
 
+-- | Best-effort source span of a port description: the combination of the
+-- spans of everything in it. Generated tuple patterns and expressions take
+-- this span so that type errors on a whole bus (e.g. a clock domain
+-- mismatch between the ports of one bundle) point at the offending ports
+-- rather than at the head of the @circuit@ block.
+portDescLoc :: PortDescription PortName -> SrcSpan
+portDescLoc = \case
+  Tuple ps -> foldr (combineSrcSpans . portDescLoc) noSrcSpan ps
+  Vec s _ -> locA s
+  Ref (PortName s _) -> locA s
+  RefMulticast (PortName s _) -> locA s
+  Lazy s _ -> locA s
+  FwdExpr _ (L s _) -> locA s
+  FwdPat _ (L s _) -> locA s
+  SigTagExpr _ (L s _) -> locA s
+  SigTagPat _ (L s _) -> locA s
+  PortType _ p -> portDescLoc p
+  PortErr s _ -> locA s
+
 bindWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => GHC.DynFlags -> Direction -> PortDescription PortName -> LPat p
 bindWithSuffix dflags dir = \case
-  Tuple ps -> tildeP noSrcSpanA $ taggedBundleP $ tupP $ fmap (bindWithSuffix dflags dir) ps
-  Vec s ps -> taggedBundleP $ vecP s $ fmap (bindWithSuffix dflags dir) ps
+  p@(Tuple ps) -> let loc = noAnnSrcSpan (portDescLoc p)
+    in tildeP loc $ taggedBundleP loc $ tupP loc $ fmap (bindWithSuffix dflags dir) ps
+  Vec s ps -> taggedBundleP s $ vecP s $ fmap (bindWithSuffix dflags dir) ps
   Ref (PortName loc fs) -> varP loc (GHC.unpackFS fs <> "_" <> show dir)
   RefMulticast (PortName loc fs) -> case dir of
     Bwd -> L loc (WildPat noExtField)
@@ -862,8 +882,9 @@ bindOutputs dflags direc slaves masters = noLoc $ conPatIn (noLoc (fwdBwdCon ?nm
 
 expWithSuffix :: (p ~ GhcPs, ?nms :: ExternalNames) => Direction -> PortDescription PortName -> LHsExpr p
 expWithSuffix dir = \case
-  Tuple ps -> taggedBundleE $ tupE noSrcSpanA $ fmap (expWithSuffix dir) ps
-  Vec s ps -> taggedBundleE $ vecE s $ fmap (expWithSuffix dir) ps
+  p@(Tuple ps) -> let loc = noAnnSrcSpan (portDescLoc p)
+    in taggedBundleE loc $ tupE loc $ fmap (expWithSuffix dir) ps
+  Vec s ps -> taggedBundleE s $ vecE s $ fmap (expWithSuffix dir) ps
   Ref (PortName loc fs)   -> varE loc (var $ GHC.unpackFS fs <> "_" <> show dir)
   RefMulticast (PortName loc fs) -> case dir of
     Bwd -> varE noSrcSpanA (trivialBwd ?nms)
@@ -930,11 +951,11 @@ runCircuitFun loc = varE loc (runCircuitName ?nms)
 prefixCon :: [arg] -> HsConDetails tyarg arg rec
 prefixCon a = PrefixCon [] a
 
-taggedBundleP :: (p ~ GhcPs, ?nms :: ExternalNames) => LPat p -> LPat p
-taggedBundleP a = noLoc (conPatIn (noLoc (tagBundlePat ?nms)) (prefixCon [a]))
+taggedBundleP :: (p ~ GhcPs, ?nms :: ExternalNames) => SrcSpanAnnA -> LPat p -> LPat p
+taggedBundleP loc a = L loc (conPatIn (noLoc (tagBundlePat ?nms)) (prefixCon [a]))
 
-taggedBundleE :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsExpr p -> LHsExpr p
-taggedBundleE a = varE noSrcSpanA (tagBundlePat ?nms) `appE` a
+taggedBundleE :: (p ~ GhcPs, ?nms :: ExternalNames) => SrcSpanAnnA -> LHsExpr p -> LHsExpr p
+taggedBundleE loc a = varE loc (tagBundlePat ?nms) `appE` a
 
 tagP :: (p ~ GhcPs, ?nms :: ExternalNames) => LPat p -> LPat p
 tagP a = noLoc (conPatIn (noLoc (tagName ?nms)) (prefixCon [a]))
@@ -1286,8 +1307,8 @@ valueCircuitQQExpM = do
             -- outputs -- even outputs that don't use it -- which deadlocks when
             -- that input depends, through the circuit, on such an output.
             logicPat = case ins of
-              [] -> tupP []
-              _  -> tupP (L noSrcSpanA (WildPat noExtField) : map (tildeP noSrcSpanA . snd . (inPats !!)) ins)
+              [] -> tupP noSrcSpanA []
+              _  -> tupP noSrcSpanA (L noSrcSpanA (WildPat noExtField) : map (tildeP noSrcSpanA . snd . (inPats !!)) ins)
             logicLam = lamE [logicPat]
               (letE noSrcSpanA (sigsForComp ci) (map (lets !!) ls)
                     (tupE noSrcSpanA (map (snd . (outExprs !!)) outs)))
@@ -1303,7 +1324,8 @@ valueCircuitQQExpM = do
             knotExpr = if length outs > 1
               then varE noSrcSpanA unbundleNm `appE` lifted
               else lifted
-            knotBind = L loc $ patBind (tupP outVarPs) knotExpr
+            outsLoc = noAnnSrcSpan (foldr (combineSrcSpans . getLocA) noSrcSpan outVarPs)
+            knotBind = L loc $ patBind (tupP outsLoc outVarPs) knotExpr
         in if null outs then [] else [logicBind, knotBind]
 
       compDecs = concat (zipWith3 mkComp [0 ..] flavors innerGroups)
