@@ -1409,8 +1409,13 @@ patVarNames = SYB.everything (<>) (SYB.mkQ [] q)
   where
     q :: Pat GhcPs -> [String]
     q = \case
-      VarPat _ (L _ rdr)  -> unqualName rdr
+      VarPat _ (L _ rdr) -> unqualName rdr
+-- GHC 9.12 folded the @\@@ token into AsPat's extension field, dropping a field.
+#if __GLASGOW_HASKELL__ >= 912
       AsPat _ (L _ rdr) _ -> unqualName rdr
+#else
+      AsPat _ (L _ rdr) _ _ -> unqualName rdr
+#endif
       _ -> []
 
 -- | All unqualified variable occurrences: a conservative over-approximation
