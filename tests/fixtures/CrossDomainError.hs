@@ -16,10 +16,11 @@ module CrossDomainError where
 
 import           Circuit
 import           Clash.Prelude
-import           Clash.Signal.Internal (Signal ((:-)))
 
-registerC :: a -> Circuit (Signal dom a) (Signal dom a)
-registerC a = Circuit $ \(s :-> ()) -> (() :-> (a :- s))
+registerC
+  :: (HiddenClockResetEnable dom, NFDataX a)
+  => a -> Circuit (Signal dom a) (Signal dom a)
+registerC a = Circuit $ \(s :-> ()) -> (() :-> register a s)
 
 crossDomainError :: Circuit (Signal domA Int, Signal domB Int) (Signal domA Int)
 crossDomainError = circuit
