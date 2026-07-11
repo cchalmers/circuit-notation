@@ -63,6 +63,10 @@ fixtures =
     -- the plugin itself, at the offending marker
   , Fixture ("tests" </> "fixtures" </> "MixedMarkerError.hs") "mixed-marker-error-marker"
       (Just "mixes DSignalV with SignalV/FwdV")
+    -- an unused value-level let (a group with no outputs) is still
+    -- typechecked; the mismatch surfaces where the input value enters
+  , Fixture ("tests" </> "fixtures" </> "DeadLetError.hs") "dead-let-error-marker"
+      (Just "Couldn't match type")
   ]
 
 main :: IO ()

@@ -1247,11 +1247,24 @@ valueCircuitQQExpM = do
       sigComp (L _ rdr) = case unqualName rdr of
         [n] -> Map.lookup n nameComp
         _   -> Nothing
+      -- split a sig carrying a list of names into one sig per component,
+      -- rebuilding it with just the names that belong to that component
+      splitByNames l rebuild ids =
+        [ (c, L l (rebuild ids'))
+        | (c, ids') <- Map.toList (Map.fromListWith (flip (<>)) [ (sigComp i, [i]) | i <- ids ]) ]
+      -- Route each let signature to the group that binds its name(s), so that
+      -- not just type signatures but also INLINE/NOINLINE pragmas and fixity
+      -- declarations follow their binding when it moves into a group's inner
+      -- let (otherwise GHC complains the pragma "lacks an accompanying
+      -- binding"). Sigs on names that stay in the outer let route to 'Nothing'.
       splitSigs = concatMap
         (\lsig@(L l s) -> case s of
             TypeSig x ids ty ->
-              [ (c, L l (TypeSig x ids' ty))
-              | (c, ids') <- Map.toList (Map.fromListWith (flip (<>)) [ (sigComp i, [i]) | i <- ids ]) ]
+              splitByNames l (\ids' -> TypeSig x ids' ty) ids
+            FixSig x (FixitySig xf ids fx) ->
+              splitByNames l (\ids' -> FixSig x (FixitySig xf ids' fx)) ids
+            InlineSig x nm prag ->
+              [(sigComp nm, L l (InlineSig x nm prag))]
             _ -> [(Nothing, lsig)])
         letTypes
       sigsForComp ci = [ s | (Just ci', s) <- splitSigs, ci' == ci ]
@@ -1284,8 +1297,8 @@ valueCircuitQQExpM = do
       -- @pure ()@. The generated bundle elements and knot patterns take the
       -- source locations of the original markers, so clock domain (and
       -- delay) mismatches are reported on the offending marker. Groups with
-      -- no outputs produce no value (their logic would be dead) and generate
-      -- nothing.
+      -- no outputs tie nothing back, but their logic is still bound (to a
+      -- wildcard) so the dead group's expressions are typechecked.
   let mkComp ci flavor (its, _) =
         let ins  = sort [ i | ItemIn i <- its ]
             outs = sort [ k | ItemOut k <- its ]
@@ -1326,7 +1339,15 @@ valueCircuitQQExpM = do
               else lifted
             outsLoc = noAnnSrcSpan (foldr (combineSrcSpans . getLocA) noSrcSpan outVarPs)
             knotBind = L loc $ patBind (tupP outsLoc outVarPs) knotExpr
-        in if null outs then [] else [logicBind, knotBind]
+            -- A group with no outputs still has its logic typechecked: bind the
+            -- lifted result to a wildcard so the input buses pin the value
+            -- types (otherwise the group's lets and expressions -- e.g. an
+            -- unused @let bad = not a@ -- would never be checked and a broken
+            -- circuit would compile). 'lifted' already applies the logic
+            -- function to the bundled inputs, so the mismatch is blamed on the
+            -- offending expression.
+            deadBind = L loc $ patBind (L noSrcSpanA (WildPat noExtField)) lifted
+        in if null outs then [logicBind, deadBind] else [logicBind, knotBind]
 
       compDecs = concat (zipWith3 mkComp [0 ..] flavors innerGroups)
 
@@ -1380,14 +1401,16 @@ unqualName = \case
   GHC.Unqual occ -> [OccName.occNameString occ]
   _ -> []
 
--- | Variable names bound by a pattern (conservative, syntactic; as-pattern
--- names are not collected).
+-- | Variable names bound by a pattern (conservative, syntactic). Both plain
+-- variable patterns and the binder of an as-pattern (@p\@(a, b)@ binds @p@ as
+-- well as @a@ and @b@) are collected.
 patVarNames :: LPat GhcPs -> [String]
 patVarNames = SYB.everything (<>) (SYB.mkQ [] q)
   where
     q :: Pat GhcPs -> [String]
     q = \case
-      VarPat _ (L _ rdr) -> unqualName rdr
+      VarPat _ (L _ rdr)  -> unqualName rdr
+      AsPat _ (L _ rdr) _ -> unqualName rdr
       _ -> []
 
 -- | All unqualified variable occurrences: a conservative over-approximation

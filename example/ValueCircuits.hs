@@ -335,6 +335,28 @@ busLevelLet = circuit \(SignalV x) -> do
   SignalV y <- inc -< SignalV (x + 1)
   idC -< SignalV (y * 2)
 
+-- | A value-level @let@ may carry pragmas and fixity declarations. When the
+-- binding moves into the group's generated logic function, its @INLINE@
+-- pragma and fixity declaration move with it (rather than being orphaned in
+-- the outer let, which GHC would reject as \"lacks an accompanying binding\").
+localLetPragmas :: Circuit (Signal dom Int) (Signal dom Int)
+localLetPragmas = circuit \(SignalV a) -> do
+  let
+    {-# INLINE inc #-}
+    inc :: Int -> Int
+    inc x = x + 1
+
+    infixl 6 .+.
+    (.+.) :: Int -> Int -> Int
+    x .+. y = x + y
+  idC -< SignalV (inc a .+. 1)
+
+-- | An as-pattern on a value marker binds both the whole value and its
+-- components: @p\@(a, b)@ makes @p@, @a@ and @b@ all available.
+valueAsPattern :: Circuit (Signal dom (Int, Int)) (Signal dom Int)
+valueAsPattern = circuit \(SignalV p@(a, b)) -> do
+  idC -< SignalV (fst p + a + b)
+
 -- Nesting ---------------------------------------------------------------
 
 -- | A value-level circuit used as a sub-circuit inside a bus-level one.
