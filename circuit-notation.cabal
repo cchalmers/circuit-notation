@@ -1,6 +1,6 @@
 cabal-version: 2.4
 name: circuit-notation
-version: 0.2.0.0
+version: 0.3.0.0
 synopsis: Source plugin for manipulating circuits in Clash using arrow notation
 description:
   Source plugin for manipulating circuits in Clash using arrow notation.
@@ -62,7 +62,9 @@ test-suite library-testsuite
   default-language: Haskell2010
   type: exitcode-stdio-1.0
   main-is: unittests.hs
-  other-modules: Example
+  other-modules:
+    Example
+    ValueCircuits
   hs-source-dirs:
     tests
     example

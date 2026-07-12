@@ -1,2 +1,7 @@
 packages: .
 
+-- So that a plain `cabal build && cabal test` drops a .ghc.environment file,
+-- letting the error-location test's bare `ghc` find the circuit-notation
+-- plugin (the same mechanism CI uses to compile the Example module).
+write-ghc-environment-files: always
+
