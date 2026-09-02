@@ -29,6 +29,9 @@
   and expressions also take the span of the ports they bundle, so
   whole-bundle errors (e.g. sharing a value-level variable across clock
   domains) are blamed on the ports rather than on the head of the circuit.
+* Drop support for GHC 9.4 and older. The plugin has required GHC 9.6 since
+  0.2.0.0; the `base` lower bound now reflects that.
+* Add support for GHC 9.14.
 
 ## 0.2.0.0 -- 2026-04-23
 

@@ -96,6 +96,9 @@ import "ghc" GHC.Types.Unique.Map
 #if __GLASGOW_HASKELL__ < 908
 import GHC.Types.Unique.Map.Extra
 #endif
+#if __GLASGOW_HASKELL__ >= 914
+import Data.List.NonEmpty (NonEmpty (..))
+#endif
 
 -- clash-prelude
 import Clash.Prelude (Vec((:>), Nil), bundle, unbundle)
@@ -189,6 +192,24 @@ pattern HsParP e <- HsPar _ e
 
 pattern ParPatP :: LPat p -> Pat p
 pattern ParPatP p <- ParPat _ p
+#endif
+
+-- GHC 9.14 made the guarded right-hand sides of 'GRHSs' a 'NonEmpty' list.
+#if __GLASGOW_HASKELL__ >= 914
+pattern SingleGRHS :: a -> NonEmpty a
+pattern SingleGRHS a = a :| []
+#else
+pattern SingleGRHS :: a -> [a]
+pattern SingleGRHS a = [a]
+#endif
+
+-- GHC 9.14 dropped the type-argument list from 'HsConDetails'.
+#if __GLASGOW_HASKELL__ >= 914
+pattern PrefixConP :: [arg] -> HsConDetails arg rec
+pattern PrefixConP args = PrefixCon args
+#else
+pattern PrefixConP :: [arg] -> HsConDetails tyarg arg rec
+pattern PrefixConP args = PrefixCon [] args
 #endif
 
 type PrintUnqualified = Outputable.NamePprCtx
@@ -495,7 +516,12 @@ unL (L _ a) = a
 -- | Get a ghc name from a TH name that's known to be unique.
 thName :: TH.Name -> GHC.RdrName
 thName nm =
+#if __GLASGOW_HASKELL__ >= 914
+  -- the flag only affects names that are not fully qualified
+  case Convert.thRdrNameGuesses True nm of
+#else
   case Convert.thRdrNameGuesses nm of
+#endif
     [name] -> name
     _      -> error "thName called on a non NameG Name"
 
@@ -520,7 +546,7 @@ simpleLambda expr = do
   L _ [L _ (Match _matchX _matchContext matchPats matchGr)] <- Just alts
 #endif
   GRHSs _grX grHss _grLocalBinds <- Just matchGr
-  [L _ (GRHS _ _ body)] <- Just grHss
+  SingleGRHS (L _ (GRHS _ _ body)) <- Just grHss
   Just (matchPats, body)
 
 -- | Create a simple let binding.
@@ -601,7 +627,7 @@ lamE pats expr =
 #endif
 
     grHss :: GRHSs GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
-    grHss = GRHSs emptyComments [grHs] $
+    grHss = GRHSs emptyComments (SingleGRHS grHs) $
       (EmptyLocalBinds noExtField)
 
     grHs :: LGRHS GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
@@ -699,7 +725,7 @@ bindSlave (L loc expr) = case expr of
   VarPat _ (L _ rdrName) -> Ref (PortName loc (fromRdrName rdrName))
   TuplePat _ lpat _ -> Tuple $ fmap bindSlave lpat
   ParPatP lpat -> bindSlave lpat
-  ConPat _ (L _ (GHC.Unqual occ)) (PrefixCon [] [lpat])
+  ConPat _ (L _ (GHC.Unqual occ)) (PrefixConP [lpat])
     | Just mk <- markerFromName occ -> FwdPat mk lpat
   -- empty list is done as the constructor
   ConPat _ (L _ rdr) _
@@ -928,14 +954,16 @@ decFromBinding dflags Binding {..} = do
 
 patBind :: LPat GhcPs -> LHsExpr GhcPs -> HsBind GhcPs
 patBind lhs expr =
-#if __GLASGOW_HASKELL__ < 910
-  PatBind noExt lhs rhs
-#else
+#if __GLASGOW_HASKELL__ >= 914
+  PatBind noExtField lhs (HsUnannotated EpPatBind) rhs
+#elif __GLASGOW_HASKELL__ >= 910
   PatBind noExtField lhs (HsNoMultAnn noExtField) rhs
+#else
+  PatBind noExt lhs rhs
 #endif
   where
     rhs :: GRHSs GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
-    rhs = GRHSs emptyComments [gr] $
+    rhs = GRHSs emptyComments (SingleGRHS gr) $
       EmptyLocalBinds noExtField
 
     gr :: LGRHS GhcPs (GenLocated SrcSpanAnnA (HsExpr GhcPs))
@@ -948,17 +976,14 @@ runCircuitFun :: (?nms :: ExternalNames) => SrcSpanAnnA -> LHsExpr GhcPs
 runCircuitFun loc = varE loc (runCircuitName ?nms)
 
 
-prefixCon :: [arg] -> HsConDetails tyarg arg rec
-prefixCon a = PrefixCon [] a
-
 taggedBundleP :: (p ~ GhcPs, ?nms :: ExternalNames) => SrcSpanAnnA -> LPat p -> LPat p
-taggedBundleP loc a = L loc (conPatIn (noLoc (tagBundlePat ?nms)) (prefixCon [a]))
+taggedBundleP loc a = L loc (conPatIn (noLoc (tagBundlePat ?nms)) (PrefixConP [a]))
 
 taggedBundleE :: (p ~ GhcPs, ?nms :: ExternalNames) => SrcSpanAnnA -> LHsExpr p -> LHsExpr p
 taggedBundleE loc a = varE loc (tagBundlePat ?nms) `appE` a
 
 tagP :: (p ~ GhcPs, ?nms :: ExternalNames) => LPat p -> LPat p
-tagP a = noLoc (conPatIn (noLoc (tagName ?nms)) (prefixCon [a]))
+tagP a = noLoc (conPatIn (noLoc (tagName ?nms)) (PrefixConP [a]))
 
 tagE :: (p ~ GhcPs, ?nms :: ExternalNames) => LHsExpr p -> LHsExpr p
 tagE a = varE noSrcSpanA (tagName ?nms) `appE` a
@@ -967,7 +992,7 @@ tagE a = varE noSrcSpanA (tagName ?nms) `appE` a
 -- errors on the value boundary (e.g. marking a non-signal bus with @Signal@)
 -- point at the marked pattern or expression
 sigTagP :: (p ~ GhcPs, ?nms :: ExternalNames) => SigMarker -> LPat p -> LPat p
-sigTagP mk a@(L l _) = L l (conPatIn (noLoc (markerTagName mk)) (prefixCon [a]))
+sigTagP mk a@(L l _) = L l (conPatIn (noLoc (markerTagName mk)) (PrefixConP [a]))
 
 sigTagE :: (p ~ GhcPs, ?nms :: ExternalNames) => SigMarker -> LHsExpr p -> LHsExpr p
 sigTagE mk a@(L l _) = varE l (markerTagName mk) `appE` a
@@ -1023,7 +1048,9 @@ unsnoc (x:xs) = Just (x:a, b)
 
 hsFunTy :: (p ~ GhcPs) => LHsType p -> LHsType p -> HsType p
 hsFunTy =
-#if __GLASGOW_HASKELL__ >= 910
+#if __GLASGOW_HASKELL__ >= 914
+    HsFunTy noExtField (HsUnannotated (EpArrow noAnn))
+#elif __GLASGOW_HASKELL__ >= 910
     HsFunTy noExtField (HsUnrestrictedArrow noAnn)
 #else
     HsFunTy noExt (HsUnrestrictedArrow $ L NoTokenLoc HsNormalTok)
