@@ -25,6 +25,7 @@ tested-with:
   ghc ==9.8.4
   ghc ==9.10.3
   ghc ==9.12.4
+  ghc ==9.14.1
 
 source-repository head
   type: git
@@ -44,7 +45,7 @@ library
     clash-prelude >=1.0,
     containers,
     data-default,
-    ghc >=9.6 && <9.13,
+    ghc >=9.6 && <9.15,
     lens,
     mtl,
     parsec,
